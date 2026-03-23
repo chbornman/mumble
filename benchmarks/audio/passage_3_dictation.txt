@@ -1,0 +1,1 @@
+Dear team, I wanted to follow up on our discussion from yesterday's standup. The migration to TypeScript is going well, but we've encountered some issues with the type definitions for our third-party libraries. Specifically, the Prisma client types aren't matching our GraphQL schema. I've opened a pull request with a proposed fix. Please review it when you get a chance.

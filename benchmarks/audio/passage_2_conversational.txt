@@ -1,0 +1,1 @@
+Hey, so I was thinking about the project structure. We should probably move the authentication logic into its own module. Right now it's kind of scattered across three different files and it's getting hard to maintain. What do you think about creating a new auth directory with separate files for OAuth, JWT tokens, and session management?

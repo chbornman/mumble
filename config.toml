@@ -1,0 +1,245 @@
+# Whisper Daemon Configuration
+# All paths support ~ for home directory expansion and environment variables
+
+[paths]
+# whisper.cpp installation directory
+whisper_cpp_dir = "~/projects/whisper.cpp"
+
+# Directory containing .bin model files (relative to whisper_cpp_dir if not absolute)
+models_dir = "models"
+
+# whisper.cpp build output directory (relative to whisper_cpp_dir if not absolute)
+build_dir = "build/bin"
+
+# Project directory (auto-detected, override if needed)
+# project_dir = "~/projects/asahi-whisper-daemon"
+
+# Vocabulary file for domain-specific terms (relative to project dir)
+vocab_file = "vocab.txt"
+
+# Sound files directory (relative to project dir)
+sound_dir = "sounds"
+
+[model]
+# Active model name (without ggml- prefix and .bin suffix)
+# Available: tiny.en, base.en, small.en, medium.en, large-v3, large-v3-turbo
+# Quantized variants: base.en-q5_1, base.en-q8_0, small.en-q5_1, etc.
+name = "base.en"
+
+# Language (use "en" for English-only models, "auto" for multilingual)
+language = "en"
+
+[backend]
+# Inference backend: "cpu" or "vulkan"
+# "cpu" uses whisper.cpp compiled with GGML_CPU (default, always works)
+# "vulkan" uses whisper.cpp compiled with GGML_VULKAN (requires Vulkan-capable GPU)
+type = "cpu"
+
+# Number of threads for inference
+# 0 = auto-detect (uses cpu_count, capped at max_threads)
+# Recommended: 8 for most systems, 4-6 for efficiency cores
+threads = 0
+
+# Maximum threads when auto-detecting (prevents over-subscription)
+max_threads = 12
+
+# Number of processors for parallel inference (whisper-server only)
+# Keep at 1 unless you need concurrent transcriptions
+processors = 1
+
+# Enable flash attention (faster on supported hardware)
+flash_attention = false
+
+[backend.cpu]
+# CPU-specific settings (used when backend.type = "cpu")
+# These are passed to whisper.cpp cmake build
+
+# Use native CPU instructions (-march=native)
+native = true
+
+# Enable OpenMP threading
+openmp = true
+
+# Enable link-time optimization (slower build, ~5-10% faster inference)
+lto = true
+
+# Enable weight repacking for better cache usage
+repack = true
+
+# Enable BLAS acceleration (requires OpenBLAS installed)
+# May help on some CPUs, benchmark to verify
+blas = false
+
+[backend.vulkan]
+# Vulkan-specific settings (used when backend.type = "vulkan")
+
+# GPU device index (0 = first GPU, 1 = second GPU, etc.)
+device = 0
+
+# Allow fallback to CPU if Vulkan initialization fails
+cpu_fallback = true
+
+[audio]
+# Audio capture sample rate in Hz (whisper requires 16000)
+sample_rate = 16000
+
+# Number of audio channels (whisper requires 1 = mono)
+channels = 1
+
+# Sound playback sample rate for feedback sounds (Hz)
+sound_sample_rate = 44100
+
+[daemon]
+# Daemon operation mode: "cli" or "server"
+# "cli" loads model per transcription (lower memory, slower per-request)
+# "server" keeps model in memory via whisper-server (higher memory, faster)
+mode = "cli"
+
+# Unix socket path for IPC
+socket_path = "/tmp/whisper_daemon.sock"
+
+# Recording state flag file
+recording_flag = "/tmp/whisper_recording"
+
+# Streaming state flag file
+streaming_flag = "/tmp/whisper_streaming"
+
+# Streaming mode PID file
+stream_pid_file = "/tmp/whisper_stream.pid"
+
+# Log file path
+log_file = "/tmp/whisper_daemon.log"
+
+# Enable desktop notifications (disable when using waybar)
+notifications = false
+
+# Whisper-server HTTP port (server mode only)
+server_port = 8080
+
+# Maximum wait time for whisper-server startup (seconds)
+server_startup_timeout = 30
+
+# Server health check interval during startup (seconds)
+server_health_check_interval = 0.5
+
+[transcription]
+# Temperature for transcription (0.0 = greedy/deterministic)
+temperature = 0.0
+
+# Temperature increment for fallback retries
+temperature_increment = 0.2
+
+# CLI mode timeout per transcription (seconds)
+cli_timeout = 60
+
+# Server mode request timeout (seconds)
+server_timeout = 30
+
+# Strip leading artifacts from transcriptions (e.g., "--", "- ")
+strip_leading_artifacts = true
+
+# Patterns to strip from start of transcription (regex list)
+strip_patterns = [
+    "^--\\s*",
+    "^-\\s+",
+]
+
+# Response format for server mode
+response_format = "json"
+
+[streaming]
+# Streaming mode settings (whisper-stream binary)
+
+# Audio step size in ms (0 = wait for speech via VAD)
+step = 0
+
+# Audio buffer length in ms
+buffer_length = 30000
+
+# Buffer overlap for continuity (ms)
+keep = 200
+
+# Voice Activity Detection threshold (0.0-1.0)
+# Higher = less sensitive (waits for clearer speech)
+# Lower = more sensitive (triggers on quieter sounds)
+vad_threshold = 0.6
+
+# Number of threads for streaming (separate from daemon threads)
+threads = 8
+
+# Maximum committed text length before trimming (characters)
+max_committed_length = 500
+
+# Minimum character overlap to consider a match
+min_overlap_chars = 20
+
+# Overlap search step size (characters to skip per iteration)
+overlap_step = 10
+
+# Suffix search length for fallback matching (characters)
+fallback_suffix_length = 50
+
+# Consecutive fallback count before drift reset
+drift_reset_threshold = 2
+
+# Maximum length for last-sentence fallback (characters)
+max_fallback_sentence_length = 100
+
+# Noise filter regex (lines matching this are filtered out)
+noise_filter_pattern = "^\\s*(\\(.*\\)|\\[.*\\]|\\*.*\\*)\\s*$"
+
+[streaming.debug]
+# Debug log file for streaming deduplication
+log_file = "/tmp/whisper_stream_debug.log"
+
+# Raw whisper-stream output log
+output_log = "/tmp/whisper_stream_output.log"
+
+# whisper-stream stderr log
+stream_log = "/tmp/whisper_stream.log"
+
+[wayland]
+# Wayland display (for wtype and notifications)
+# "auto" tries to detect from environment
+display = "wayland-1"
+
+# XDG runtime directory
+# "auto" uses /run/user/<uid>
+xdg_runtime_dir = "auto"
+
+# Text input tool
+typer = "wtype"
+
+# Notification tool
+notifier = "notify-send"
+
+# Notification timeout (ms)
+notification_timeout = 2000
+
+[waybar]
+# Waybar module update interval (seconds)
+update_interval = 0.5
+
+# Icons for different states
+[waybar.icons]
+cli_ready = "~"
+cli_recording = "● dictation"
+cli_processing = "dictation"
+server_ready = "◆"
+server_recording = "◆ dictation"
+server_processing = "dictation"
+streaming = "~ streaming"
+error = "~"
+
+[build]
+# whisper.cpp build configuration
+# Used by install.sh and rebuild commands
+
+# CMake build type
+build_type = "Release"
+
+# Build whisper-server
+build_server = true
+
+# Build with SDL2 support (required for streaming mode)
+build_sdl2 = true

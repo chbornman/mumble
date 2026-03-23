@@ -28,3 +28,13 @@ build/
 dist/
 *.so
 *.dylib
+
+# Benchmark audio files (too large for git)
+benchmarks/audio/*.wav
+benchmarks/audio/*.mp3
+benchmarks/audio/*.flac
+benchmarks/audio/*.ogg
+benchmarks/audio/*.m4a
+
+# Benchmark results
+benchmarks/results/

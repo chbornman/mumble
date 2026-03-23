@@ -1,0 +1,1 @@
+Looking at this diff, the async await pattern in the fetch handler needs to be refactored. You're using a try catch block but not properly handling the AbortController timeout. Also, the useEffect cleanup function should cancel the pending request. One more thing, the ESLint config needs the no-floating-promises rule enabled to catch these issues automatically.

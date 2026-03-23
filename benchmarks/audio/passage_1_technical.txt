@@ -1,0 +1,1 @@
+The Kubernetes cluster is running three replicas of the FastAPI backend, each connected to a PostgreSQL database through SQLAlchemy. We need to update the Docker Compose configuration to include Redis for caching and add a Nginx reverse proxy. The CI/CD pipeline in GitHub Actions should run pytest and mypy before deploying to the staging environment.
