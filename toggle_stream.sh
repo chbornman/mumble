@@ -110,7 +110,7 @@ else
     if [ "$BACKEND" = "cpu" ]; then
         GPU_FLAGS="--no-gpu"
     else
-        GPU_FLAGS="--device $VULKAN_DEVICE"
+        export GGML_VULKAN_DEVICE="$VULKAN_DEVICE"
     fi
 
     # Launch streaming with Python deduplication
