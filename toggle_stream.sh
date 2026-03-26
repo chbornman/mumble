@@ -23,6 +23,7 @@ print(c.streaming.keep)
 print(c.streaming.step)
 print(c.streaming.debug.stream_log)
 print(c.streaming.debug.output_log)
+print(c.model.language)
 " 2>/dev/null
 }
 
@@ -42,6 +43,7 @@ if [ -z "$CONFIG_VALUES" ]; then
     STEP="0"
     STREAM_LOG="/tmp/whisper_stream.log"
     OUTPUT_LOG="/tmp/whisper_stream_output.log"
+    LANGUAGE="en"
 else
     STREAM_FLAG=$(echo "$CONFIG_VALUES" | sed -n '1p')
     STREAM_PID_FILE=$(echo "$CONFIG_VALUES" | sed -n '2p')
@@ -55,6 +57,7 @@ else
     STEP=$(echo "$CONFIG_VALUES" | sed -n '10p')
     STREAM_LOG=$(echo "$CONFIG_VALUES" | sed -n '11p')
     OUTPUT_LOG=$(echo "$CONFIG_VALUES" | sed -n '12p')
+    LANGUAGE=$(echo "$CONFIG_VALUES" | sed -n '13p')
 fi
 
 # Check if already streaming
@@ -89,6 +92,7 @@ else
     (
         "$WHISPER_STREAM" \
             -m "$MODEL" \
+            -l "$LANGUAGE" \
             --step "$STEP" \
             --length "$BUFFER_LENGTH" \
             --keep "$KEEP" \

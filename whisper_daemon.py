@@ -433,8 +433,18 @@ class WhisperDaemon:
             str(self.config.backend.effective_threads),
         ]
 
+        if self.config.backend.type == "vulkan":
+            cmd.extend(["--device", str(self.config.backend.vulkan.device)])
+        elif self.config.backend.type == "cpu":
+            cmd.append("--no-gpu")
+
+        if self.config.model.language:
+            cmd.extend(["-l", self.config.model.language])
+
         if self.vocab_prompt:
             cmd.extend(["--prompt", self.vocab_prompt])
+
+        self.logger.info(f"CLI command: {' '.join(cmd)}")
 
         result = subprocess.run(
             cmd,
@@ -442,6 +452,9 @@ class WhisperDaemon:
             text=True,
             timeout=self.config.transcription.cli_timeout,
         )
+
+        if result.stderr:
+            self.logger.info(f"CLI stderr: {result.stderr[:500]}")
 
         if result.returncode == 0:
             lines = result.stdout.strip().split("\n")
@@ -575,6 +588,11 @@ class WhisperDaemon:
             str(processors),
             "--no-timestamps",
         ]
+
+        if self.config.backend.type == "vulkan":
+            cmd.extend(["--device", str(self.config.backend.vulkan.device)])
+        elif self.config.backend.type == "cpu":
+            cmd.append("--no-gpu")
 
         self.logger.info(
             f"Starting whisper-server on port {port} "
