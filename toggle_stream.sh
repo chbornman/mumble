@@ -33,7 +33,7 @@ if [ -z "$CONFIG_VALUES" ]; then
     # Fallback to defaults if config loading fails
     STREAM_FLAG="/tmp/whisper_streaming"
     STREAM_PID_FILE="/tmp/whisper_stream.pid"
-    SOUND_DIR="$HOME/projects/asahi-whisper-daemon/sounds"
+    SOUND_DIR="$HOME/projects/mumble/sounds"
     WHISPER_STREAM="$HOME/projects/whisper.cpp/build/bin/whisper-stream"
     MODEL="$HOME/projects/whisper.cpp/models/ggml-base.en.bin"
     VAD_THRESHOLD="0.6"
