@@ -185,6 +185,20 @@ Everything runs locally:
 
 - **[Moonshine](https://github.com/usefulsensors/moonshine)** — MIT-licensed on-device speech-to-text model from Useful Sensors. Unlike Whisper (encoder-decoder, processes fixed 30s chunks), Moonshine is optimized for low-latency partial inference on chunks as short as ~1s. Could enable true real-time streaming without the buffer-fill-then-dump behavior of whisper-stream. Available as ONNX/PyTorch (no whisper.cpp-style C++ runtime yet). Sizes: Tiny (~190MB), Base (~400MB).
 
+## whisper.cpp Patches
+
+Streaming mode requires a patched `whisper-stream` binary. The upstream binary lacks `--device` for GPU selection, which is needed on multi-GPU systems (e.g. margo, where device 0 is the iGPU and device 1 is the V620).
+
+Both machines track a `mumble-patches` branch in `~/projects/whisper.cpp` with this patch. When updating whisper.cpp:
+
+```bash
+cd ~/projects/whisper.cpp
+git fetch origin
+git rebase origin/master   # or whatever upstream branch
+# resolve conflicts if any, then rebuild
+cd build && cmake --build . --target whisper-stream -j$(nproc)
+```
+
 ## Credits
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Core inference engine
