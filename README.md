@@ -181,6 +181,10 @@ Everything runs locally:
 - Text injection via wtype (Wayland)
 - No internet required
 
+## Future Investigation
+
+- **[Moonshine](https://github.com/usefulsensors/moonshine)** — MIT-licensed on-device speech-to-text model from Useful Sensors. Unlike Whisper (encoder-decoder, processes fixed 30s chunks), Moonshine is optimized for low-latency partial inference on chunks as short as ~1s. Could enable true real-time streaming without the buffer-fill-then-dump behavior of whisper-stream. Available as ONNX/PyTorch (no whisper.cpp-style C++ runtime yet). Sizes: Tiny (~190MB), Base (~400MB).
+
 ## Credits
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Core inference engine

@@ -5,10 +5,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Read config values via Python helper
 read_config() {
-    python3 -c "
+    "$SCRIPT_DIR/.venv/bin/python" -c "
 from config_loader import load_config
 c = load_config('$SCRIPT_DIR/config.toml')
 print(c.daemon.streaming_flag)
@@ -24,6 +25,7 @@ print(c.streaming.step)
 print(c.streaming.debug.stream_log)
 print(c.streaming.debug.output_log)
 print(c.model.language)
+print(c.backend.type)
 " 2>/dev/null
 }
 
@@ -44,6 +46,7 @@ if [ -z "$CONFIG_VALUES" ]; then
     STREAM_LOG="/tmp/whisper_stream.log"
     OUTPUT_LOG="/tmp/whisper_stream_output.log"
     LANGUAGE="en"
+    BACKEND="cpu"
 else
     STREAM_FLAG=$(echo "$CONFIG_VALUES" | sed -n '1p')
     STREAM_PID_FILE=$(echo "$CONFIG_VALUES" | sed -n '2p')
@@ -58,6 +61,7 @@ else
     STREAM_LOG=$(echo "$CONFIG_VALUES" | sed -n '11p')
     OUTPUT_LOG=$(echo "$CONFIG_VALUES" | sed -n '12p')
     LANGUAGE=$(echo "$CONFIG_VALUES" | sed -n '13p')
+    BACKEND=$(echo "$CONFIG_VALUES" | sed -n '14p')
 fi
 
 # Check if already streaming
@@ -65,8 +69,8 @@ if [ -f "$STREAM_FLAG" ]; then
     # Stop streaming
     if [ -f "$STREAM_PID_FILE" ]; then
         PID=$(cat "$STREAM_PID_FILE")
-        kill $PID 2>/dev/null
-        pkill -P $PID 2>/dev/null
+        kill $PID 2>/dev/null || true
+        pkill -P $PID 2>/dev/null || true
         rm -f "$STREAM_PID_FILE"
     fi
 
@@ -88,11 +92,18 @@ else
         pw-play "$SOUND_DIR/snare.wav" &
     fi
 
+    # Build GPU flag
+    GPU_FLAG=""
+    if [ "$BACKEND" = "cpu" ]; then
+        GPU_FLAG="--no-gpu"
+    fi
+
     # Launch streaming with Python deduplication
     (
         "$WHISPER_STREAM" \
             -m "$MODEL" \
             -l "$LANGUAGE" \
+            $GPU_FLAG \
             --step "$STEP" \
             --length "$BUFFER_LENGTH" \
             --keep "$KEEP" \
@@ -100,7 +111,7 @@ else
             -t "$THREADS" \
             2>"$STREAM_LOG" \
             | tee "$OUTPUT_LOG" \
-            | python3 "$SCRIPT_DIR/stream_dedup.py"
+            | "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/stream_dedup.py"
     ) &
 
     echo $! > "$STREAM_PID_FILE"
