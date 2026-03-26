@@ -134,6 +134,30 @@ See [benchmark.py](benchmark.py) for full options.
 | `medium.en` | 1.5 GB | ~2x realtime | Professional work |
 | `large-v3-turbo` | 1.6 GB | ~1.5x realtime | Maximum accuracy |
 
+## Machine-Specific Tuning
+
+The optimal config depends heavily on hardware. The same model/backend combo can perform very differently across machines due to GPU driver maturity, CPU architecture, and memory bandwidth.
+
+### margo (Desktop - Ryzen 9 9900X / Radeon Pro V620)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| Backend | `vulkan` | Mature AMD RDNA Vulkan driver, ggml shaders optimized for this arch |
+| Model | `large-v3-turbo` | V620 handles it easily (~0.8s for any length) |
+| Mode | `cli` | Fast enough that model reload is negligible |
+| Vulkan device | `1` | Second GPU |
+
+### asahi (MacBook Pro M1 Pro - Asahi Linux)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| Backend | `cpu` | Apple GPU Vulkan driver (Asahi/Mesa) is immature for compute shaders. CPU with ARM NEON is faster. |
+| Model | `base.en` | Best speed/accuracy tradeoff (~0.6s). `small.en` is ~1.7s, `large-v3-turbo` is ~7s on CPU. |
+| Mode | `cli` | Low memory footprint, base.en loads fast |
+| Threads | `10` | M1 Pro has 8P+2E cores |
+
+**Why not Vulkan on Apple Silicon?** The M1 Pro GPU is powerful, but Vulkan on Asahi is a reverse-engineered driver translating a foreign API to Apple's unique GPU architecture. Compute shader performance (matrix multiplications for inference) lags behind the mature CPU NEON path. This may improve as the Asahi Mesa driver matures.
+
 ## Waybar Integration
 
 The waybar module shows:
