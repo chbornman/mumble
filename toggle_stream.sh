@@ -26,6 +26,9 @@ print(c.streaming.debug.stream_log)
 print(c.streaming.debug.output_log)
 print(c.model.language)
 print(c.backend.type)
+print(c.backend.vulkan.device)
+print(c.wayland.display)
+print(c.wayland.xdg_runtime_dir)
 " 2>/dev/null
 }
 
@@ -47,6 +50,9 @@ if [ -z "$CONFIG_VALUES" ]; then
     OUTPUT_LOG="/tmp/whisper_stream_output.log"
     LANGUAGE="en"
     BACKEND="cpu"
+    VULKAN_DEVICE="0"
+    WAYLAND_DISPLAY_CFG="wayland-1"
+    XDG_RUNTIME_DIR_CFG="/run/user/$(id -u)"
 else
     STREAM_FLAG=$(echo "$CONFIG_VALUES" | sed -n '1p')
     STREAM_PID_FILE=$(echo "$CONFIG_VALUES" | sed -n '2p')
@@ -62,7 +68,14 @@ else
     OUTPUT_LOG=$(echo "$CONFIG_VALUES" | sed -n '12p')
     LANGUAGE=$(echo "$CONFIG_VALUES" | sed -n '13p')
     BACKEND=$(echo "$CONFIG_VALUES" | sed -n '14p')
+    VULKAN_DEVICE=$(echo "$CONFIG_VALUES" | sed -n '15p')
+    WAYLAND_DISPLAY_CFG=$(echo "$CONFIG_VALUES" | sed -n '16p')
+    XDG_RUNTIME_DIR_CFG=$(echo "$CONFIG_VALUES" | sed -n '17p')
 fi
+
+# Ensure Wayland env is set for wtype
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-$WAYLAND_DISPLAY_CFG}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$XDG_RUNTIME_DIR_CFG}"
 
 # Check if already streaming
 if [ -f "$STREAM_FLAG" ]; then
@@ -92,10 +105,12 @@ else
         pw-play "$SOUND_DIR/snare.wav" &
     fi
 
-    # Build GPU flag
-    GPU_FLAG=""
+    # Build GPU/device flags
+    GPU_FLAGS=""
     if [ "$BACKEND" = "cpu" ]; then
-        GPU_FLAG="--no-gpu"
+        GPU_FLAGS="--no-gpu"
+    else
+        GPU_FLAGS="--device $VULKAN_DEVICE"
     fi
 
     # Launch streaming with Python deduplication
@@ -103,7 +118,7 @@ else
         "$WHISPER_STREAM" \
             -m "$MODEL" \
             -l "$LANGUAGE" \
-            $GPU_FLAG \
+            $GPU_FLAGS \
             --step "$STEP" \
             --length "$BUFFER_LENGTH" \
             --keep "$KEEP" \
