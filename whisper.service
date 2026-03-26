@@ -1,11 +1,11 @@
 [Unit]
-Description=Whisper Dictation Daemon
+Description=mumble - whisper.cpp dictation daemon
 After=sound.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/asahi-whisper-daemon
-ExecStart=%h/projects/asahi-whisper-daemon/.venv/bin/python %h/projects/asahi-whisper-daemon/whisper_daemon.py --config %h/projects/asahi-whisper-daemon/config.toml
+WorkingDirectory=%h/projects/mumble
+ExecStart=%h/projects/mumble/.venv/bin/python %h/projects/mumble/whisper_daemon.py --config %h/projects/mumble/config.toml
 Restart=always
 RestartSec=5
 

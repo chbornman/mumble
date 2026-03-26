@@ -1,6 +1,6 @@
-# Whisper Dictation Daemon
+# mumble
 
-Voice dictation system using whisper.cpp with a unified configuration file (`config.toml`).
+whisper.cpp dictation daemon with per-machine config, Vulkan/CPU backends, and Waybar integration.
 
 ## Features
 

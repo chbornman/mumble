@@ -12,7 +12,7 @@ models_dir = "models"
 build_dir = "build/bin"
 
 # Project directory (auto-detected, override if needed)
-# project_dir = "~/projects/asahi-whisper-daemon"
+# project_dir = "~/projects/mumble"
 
 # Vocabulary file for domain-specific terms (relative to project dir)
 vocab_file = "vocab.txt"
