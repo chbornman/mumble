@@ -15,7 +15,8 @@ build_dir = "build/bin"
 # project_dir = "~/projects/asahi-whisper-daemon"
 
 # Vocabulary file for domain-specific terms (relative to project dir)
-vocab_file = "vocab.txt"
+# Note: large-v3-turbo is sensitive to long prompts; disable if hallucinating
+# vocab_file = "vocab.txt"
 
 # Sound files directory (relative to project dir)
 sound_dir = "sounds"
@@ -41,7 +42,7 @@ type = "cpu"
 threads = 0
 
 # Maximum threads when auto-detecting (prevents over-subscription)
-max_threads = 12
+max_threads = 10
 
 # Number of processors for parallel inference (whisper-server only)
 # Keep at 1 unless you need concurrent transcriptions
