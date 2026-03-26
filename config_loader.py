@@ -229,13 +229,34 @@ def _find_config_file(explicit_path: Optional[str] = None) -> Path:
     )
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict."""
+    merged = base.copy()
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(config_path: Optional[str] = None) -> Config:
-    """Load and parse config.toml into a Config dataclass."""
+    """Load and parse config.toml into a Config dataclass.
+
+    If a config.local.toml exists alongside config.toml, its values
+    are deep-merged on top, allowing machine-specific overrides.
+    """
     path = _find_config_file(config_path).resolve()
     project_dir = path.parent
 
     with open(path, "rb") as f:
         raw = tomllib.load(f)
+
+    local_path = path.parent / "config.local.toml"
+    if local_path.exists():
+        with open(local_path, "rb") as f:
+            local_raw = tomllib.load(f)
+        raw = _deep_merge(raw, local_raw)
 
     # Paths
     whisper_cpp_dir = _expand_path(raw["paths"]["whisper_cpp_dir"])
