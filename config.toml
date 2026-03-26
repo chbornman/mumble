@@ -15,8 +15,7 @@ build_dir = "build/bin"
 # project_dir = "~/projects/asahi-whisper-daemon"
 
 # Vocabulary file for domain-specific terms (relative to project dir)
-# Note: large-v3-turbo is sensitive to long prompts; disable if hallucinating
-# vocab_file = "vocab.txt"
+vocab_file = "vocab.txt"
 
 # Sound files directory (relative to project dir)
 sound_dir = "sounds"
@@ -25,7 +24,7 @@ sound_dir = "sounds"
 # Active model name (without ggml- prefix and .bin suffix)
 # Available: tiny.en, base.en, small.en, medium.en, large-v3, large-v3-turbo
 # Quantized variants: base.en-q5_1, base.en-q8_0, small.en-q5_1, etc.
-name = "base.en"
+name = "large-v3-turbo"
 
 # Language (use "en" for English-only models, "auto" for multilingual)
 language = "en"
@@ -34,7 +33,7 @@ language = "en"
 # Inference backend: "cpu" or "vulkan"
 # "cpu" uses whisper.cpp compiled with GGML_CPU (default, always works)
 # "vulkan" uses whisper.cpp compiled with GGML_VULKAN (requires Vulkan-capable GPU)
-type = "cpu"
+type = "vulkan"
 
 # Number of threads for inference
 # 0 = auto-detect (uses cpu_count, capped at max_threads)
@@ -42,7 +41,7 @@ type = "cpu"
 threads = 0
 
 # Maximum threads when auto-detecting (prevents over-subscription)
-max_threads = 10
+max_threads = 12
 
 # Number of processors for parallel inference (whisper-server only)
 # Keep at 1 unless you need concurrent transcriptions
@@ -75,7 +74,7 @@ blas = false
 # Vulkan-specific settings (used when backend.type = "vulkan")
 
 # GPU device index (0 = first GPU, 1 = second GPU, etc.)
-device = 0
+device = 1
 
 # Allow fallback to CPU if Vulkan initialization fails
 cpu_fallback = true

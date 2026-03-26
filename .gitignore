@@ -38,3 +38,6 @@ benchmarks/audio/*.m4a
 
 # Benchmark results
 benchmarks/results/
+
+# Machine-specific config overrides
+config.local.toml
