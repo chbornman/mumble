@@ -138,14 +138,14 @@ See [benchmark.py](benchmark.py) for full options.
 
 The optimal config depends heavily on hardware. The same model/backend combo can perform very differently across machines due to GPU driver maturity, CPU architecture, and memory bandwidth.
 
-### margo (Desktop - Ryzen 9 9900X / Radeon Pro V620)
+### margo (Desktop - Ryzen 9 9900X / RTX 5080)
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| Backend | `vulkan` | Mature AMD RDNA Vulkan driver, ggml shaders optimized for this arch |
-| Model | `large-v3-turbo` | V620 handles it easily (~0.8s for any length) |
+| Backend | `vulkan` | NVIDIA Vulkan driver, excellent ggml shader performance |
+| Model | `large-v3-turbo` | RTX 5080 handles it easily (~0.8s for any length) |
 | Mode | `cli` | Fast enough that model reload is negligible |
-| Vulkan device | `1` | Second GPU |
+| Vulkan device | `0` | Primary GPU |
 
 ### asahi (MacBook Pro M1 Pro - Asahi Linux)
 
