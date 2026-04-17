@@ -1,0 +1,13 @@
+Calibration passage: technical.
+
+Read this aloud at your natural cadence. Pause deliberately at the paragraph breaks. Include a few mid-phrase hesitations where marked ("...") — those are the hard case for streaming deduplication.
+
+The Kubernetes cluster is running three replicas of the FastAPI backend. Each one connects to a PostgreSQL database through SQLAlchemy, and we route traffic through a Caddy reverse proxy.
+
+We need to update the Docker Compose configuration to include Redis for caching. The CI pipeline in GitHub Actions should run pytest and mypy ... actually, run ruff first, then pytest, then mypy before deploying to staging.
+
+On the frontend, the TypeScript bundle is built with Vite. We lazy-load the dashboard route and prefetch the user profile page. Lighthouse scores are currently holding at ninety-four for performance and ninety-eight for accessibility.
+
+The streaming deduplication logic uses word-level diff. It tracks committed text, extracts only the new portion from each transcription block, and falls back to the last sentence when it cannot find an overlap. If drift accumulates past the reset threshold, it resets the committed buffer and continues.
+
+Wrap up: the calibration target is zero dropped words and zero duplicated words under normal conversational pacing.
