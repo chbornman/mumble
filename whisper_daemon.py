@@ -30,6 +30,7 @@ from app_context import (
     format_context_block,
     select_app_style,
 )
+from clipboard_paste import paste_via_clipboard
 from config_loader import Config, load_config
 from glossary import Glossary, format_whisper_prompt, load_glossary
 from llm_postprocess import LLMPostProcessor
@@ -599,8 +600,29 @@ class WhisperDaemon:
             return ""
 
     def _type_text(self, text: str):
-        """Type text using the configured Wayland typer."""
+        """Type text using the configured Wayland typer.
+
+        When the text is longer than `wayland.clipboard_paste_threshold`
+        (and the threshold is enabled), mumble copies via `wl-copy`,
+        synthesizes Ctrl+V, and restores the previous clipboard — wtype
+        drops keystrokes on long inputs. Threshold 0 keeps the legacy
+        behavior (always use the typer).
+        """
         typer = self.config.wayland.typer
+        threshold = self.config.wayland.clipboard_paste_threshold
+        if threshold > 0 and len(text) > threshold:
+            self.logger.info(
+                f"Text ({len(text)} chars) exceeds threshold ({threshold}); "
+                "using clipboard paste path"
+            )
+            paste_via_clipboard(
+                text,
+                typer=typer,
+                wl_copy=self.config.wayland.wl_copy,
+                wl_paste=self.config.wayland.wl_paste,
+                logger=self.logger,
+            )
+            return
         try:
             subprocess.run([typer, "-"], input=text, text=True, check=True, timeout=5)
             self.logger.info("Text typed successfully")

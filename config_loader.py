@@ -144,6 +144,9 @@ class WaylandConfig:
     typer: str
     notifier: str
     notification_timeout: int
+    clipboard_paste_threshold: int
+    wl_copy: str
+    wl_paste: str
 
 
 @dataclass
@@ -411,6 +414,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
         typer=wayland_raw["typer"],
         notifier=wayland_raw["notifier"],
         notification_timeout=wayland_raw["notification_timeout"],
+        clipboard_paste_threshold=wayland_raw.get("clipboard_paste_threshold", 0),
+        wl_copy=wayland_raw.get("wl_copy", "wl-copy"),
+        wl_paste=wayland_raw.get("wl_paste", "wl-paste"),
     )
 
     # Waybar

@@ -210,6 +210,17 @@ xdg_runtime_dir = "auto"
 # Text input tool
 typer = "wtype"
 
+# Clipboard-paste threshold (characters). When the transcribed text is
+# longer than this, mumble copies via `wl-copy`, synthesizes Ctrl+V via
+# wtype, and restores the previous clipboard — `wtype` gets flaky on
+# long inputs. 0 disables the clipboard path entirely (always use typer).
+clipboard_paste_threshold = 0
+
+# Clipboard tooling (Wayland). Only consumed when
+# clipboard_paste_threshold > 0.
+wl_copy = "wl-copy"
+wl_paste = "wl-paste"
+
 # Notification tool
 notifier = "notify-send"
 
