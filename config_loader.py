@@ -172,6 +172,19 @@ class BuildConfig:
 
 
 @dataclass
+class LLMPostprocessConfig:
+    enabled: bool
+    backend: str
+    endpoint: str
+    model: str
+    max_tokens: int
+    temperature: float
+    timeout: int
+    audit_log: str
+    prompt_template_path: str
+
+
+@dataclass
 class Config:
     paths: PathsConfig
     model: ModelConfig
@@ -183,6 +196,7 @@ class Config:
     wayland: WaylandConfig
     waybar: WaybarConfig
     build: BuildConfig
+    llm_postprocess: LLMPostprocessConfig
 
     @property
     def model_path(self) -> Path:
@@ -413,6 +427,20 @@ def load_config(config_path: Optional[str] = None) -> Config:
         build_sdl2=build_raw.get("build_sdl2", True),
     )
 
+    # LLM post-processing (optional, off by default)
+    llm_raw = raw.get("llm_postprocess", {})
+    llm_postprocess = LLMPostprocessConfig(
+        enabled=llm_raw.get("enabled", False),
+        backend=llm_raw.get("backend", "llama.cpp"),
+        endpoint=llm_raw.get("endpoint", "http://127.0.0.1:8090/v1/chat/completions"),
+        model=llm_raw.get("model", "qwen3-4b-instruct"),
+        max_tokens=llm_raw.get("max_tokens", 512),
+        temperature=llm_raw.get("temperature", 0.0),
+        timeout=llm_raw.get("timeout", 10),
+        audit_log=llm_raw.get("audit_log", "/tmp/mumble_postprocess.jsonl"),
+        prompt_template_path=llm_raw.get("prompt_template_path", ""),
+    )
+
     return Config(
         paths=paths,
         model=model,
@@ -424,4 +452,5 @@ def load_config(config_path: Optional[str] = None) -> Config:
         wayland=wayland,
         waybar=waybar,
         build=build,
+        llm_postprocess=llm_postprocess,
     )

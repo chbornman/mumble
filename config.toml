@@ -243,3 +243,49 @@ build_server = true
 
 # Build with SDL2 support (required for streaming mode)
 build_sdl2 = true
+
+[llm_postprocess]
+# Optional local-LLM cleanup pass after Whisper transcription (CLI mode only).
+# Removes fillers, resolves self-corrections, restores punctuation, applies
+# glossary corrections. Streaming + LLM is out of scope — combined pipeline
+# latency is too high.
+#
+# Off by default. Enable only after pointing `endpoint` at a running LLM
+# server. Any HTTP failure falls back to the raw Whisper transcript.
+enabled = false
+
+# Backend hint ("llama.cpp", "ollama", "lmstudio", "vllm"). Informational only;
+# all backends are called via the OpenAI-compatible /v1/chat/completions API.
+backend = "llama.cpp"
+
+# OpenAI-compatible chat-completions endpoint.
+# llama.cpp server default:  http://127.0.0.1:8090/v1/chat/completions
+# Ollama (OpenAI shim):      http://127.0.0.1:11434/v1/chat/completions
+# LM Studio default:         http://127.0.0.1:1234/v1/chat/completions
+endpoint = "http://127.0.0.1:8090/v1/chat/completions"
+
+# Model name as the server knows it. Recommended local models on 16 GB VRAM:
+#   Qwen3-4B-Instruct (Q5_K_M, ~3 GB)     — fast, strong at constrained edits
+#   Phi-4-mini (3.8B)                     — low latency
+#   Llama-3.1-8B-Instruct (Q4_K_M, ~5 GB) — well-understood baseline
+#   Hermes-3-Llama-3.1-8B                 — cited for this exact use case
+model = "qwen3-4b-instruct"
+
+# Cap on generated tokens. 512 comfortably covers multi-sentence dictation.
+max_tokens = 512
+
+# Greedy decoding. Cleanup is a constrained-edit task; sampling adds drift.
+temperature = 0.0
+
+# HTTP request timeout (seconds). Expected latency on a 5080 is 0.3-1.5s.
+timeout = 10
+
+# JSONL audit log — one row per turn:
+#   {timestamp, audio_file, raw_transcript, prompt, context, mode,
+#    cleaned_output, raw_llm_output, model, latency_ms, error}
+# Required for prompt tuning. Set to "" to disable.
+audit_log = "/tmp/mumble_postprocess.jsonl"
+
+# Optional path to a file whose contents replace the built-in base system
+# prompt. Empty = use built-in (FreeFlow-pattern cleanup prompt).
+prompt_template_path = ""
