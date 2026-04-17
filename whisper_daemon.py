@@ -26,6 +26,8 @@ import scipy.io.wavfile as wavfile
 import sounddevice as sd
 
 from config_loader import Config, load_config
+from glossary import Glossary, format_whisper_prompt, load_glossary
+from llm_postprocess import LLMPostProcessor
 
 try:
     import requests
@@ -213,8 +215,21 @@ class WhisperDaemon:
             self.logger.error(f"Whisper CLI not found: {config.whisper_cli_path}")
             sys.exit(1)
 
-        # Load vocab
+        # Load vocab (legacy flat prompt for Whisper --prompt)
         self.vocab_prompt = self._load_vocab()
+
+        # LLM post-processing (optional, off by default). When enabled we also
+        # parse vocab.txt into a structured Glossary for LLM hints + determ-
+        # inistic substitutions; the Whisper --prompt string above is unchanged.
+        self.glossary: Glossary | None = None
+        self.llm_processor: LLMPostProcessor | None = None
+        if config.llm_postprocess.enabled:
+            self.glossary = load_glossary(config.paths.vocab_file)
+            self.llm_processor = LLMPostProcessor(config.llm_postprocess, self.logger)
+            self.logger.info(
+                f"LLM postprocess enabled: {config.llm_postprocess.endpoint} "
+                f"(model={config.llm_postprocess.model})"
+            )
 
         # State
         self.recording = False
@@ -405,6 +420,27 @@ class WhisperDaemon:
             # Clean artifacts (e.g., leading --)
             if text:
                 text = self.config.transcription.clean_text(text)
+
+            # Optional LLM cleanup pass (feature-flagged off by default).
+            # On any failure the processor returns the original text, so the
+            # user's dictation never hard-breaks on a misconfigured endpoint.
+            if text and self.llm_processor is not None:
+                outcome = self.llm_processor.process(
+                    text,
+                    glossary=self.glossary,
+                    audio_file=Path(temp_file).name,
+                )
+                if outcome.error:
+                    self.logger.warning(
+                        f"LLM postprocess failed ({outcome.error}); "
+                        f"using raw transcript"
+                    )
+                else:
+                    self.logger.info(
+                        f"LLM cleaned in {outcome.latency_ms}ms: "
+                        f"'{text[:40]}' -> '{outcome.cleaned[:40]}'"
+                    )
+                text = outcome.cleaned
 
             if text:
                 self.logger.info(f"Transcribed: {text[:50]}...")
