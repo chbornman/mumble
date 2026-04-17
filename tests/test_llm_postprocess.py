@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from glossary import Glossary
 from llm_postprocess import (
     BASE_SYSTEM_PROMPT,
+    COMMAND_SYSTEM_PROMPT,
     EMPTY_SENTINEL,
     LLMPostProcessor,
     PostprocessOutcome,
@@ -223,6 +224,60 @@ class TestLLMPostProcessorAuditLog(unittest.TestCase):
                 glossary=Glossary(mappings=[("ant row pick", "Anthropic")]),
             )
         self.assertEqual(outcome.cleaned, "I work at Anthropic.")
+
+
+class TestTransformCommand(unittest.TestCase):
+    def test_command_prompt_uses_tagged_sections(self):
+        cfg = FakeLLMConfig(audit_log="")
+        proc = LLMPostProcessor(cfg, logging.getLogger("test"))
+
+        captured = {}
+
+        class FakeResp:
+            status_code = 200
+
+            def json(self):
+                return {"choices": [{"message": {"content": "SHORTER"}}]}
+
+        def fake_post(url, json=None, timeout=None):  # noqa: A002
+            captured["messages"] = json["messages"]
+            captured["temperature"] = json["temperature"]
+            return FakeResp()
+
+        with patch("llm_postprocess.requests.post", side_effect=fake_post):
+            outcome = proc.transform_command(
+                selected_text="This is a long paragraph that should be shorter.",
+                voice_instruction="make it shorter",
+                temperature=0.5,
+            )
+
+        self.assertEqual(outcome.cleaned, "SHORTER")
+        self.assertIsNone(outcome.error)
+        # Command prompt must appear as the system message.
+        self.assertEqual(captured["messages"][0]["content"], COMMAND_SYSTEM_PROMPT)
+        user_msg = captured["messages"][1]["content"]
+        self.assertIn("<SELECTED_TEXT>", user_msg)
+        self.assertIn("<VOICE_COMMAND>", user_msg)
+        self.assertIn("make it shorter", user_msg)
+        self.assertEqual(captured["temperature"], 0.5)
+
+    def test_transform_command_falls_back_to_selection_on_error(self):
+        cfg = FakeLLMConfig(audit_log="")
+        proc = LLMPostProcessor(cfg, logging.getLogger("test"))
+
+        class FakeResp:
+            status_code = 500
+            text = "boom"
+
+            def json(self):
+                return {}
+
+        with patch("llm_postprocess.requests.post", return_value=FakeResp()):
+            outcome = proc.transform_command(
+                "selected", "do a thing"
+            )
+        self.assertEqual(outcome.cleaned, "selected")
+        self.assertEqual(outcome.error, "http-500")
 
 
 if __name__ == "__main__":

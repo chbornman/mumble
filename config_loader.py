@@ -175,6 +175,13 @@ class BuildConfig:
 
 
 @dataclass
+class CommandModeConfig:
+    enabled: bool
+    selection_source: str  # "primary" or "clipboard"
+    temperature: float
+
+
+@dataclass
 class AppContextConfig:
     enabled: bool
     max_title_chars: int
@@ -192,6 +199,7 @@ class LLMPostprocessConfig:
     audit_log: str
     prompt_template_path: str
     app_context: AppContextConfig
+    command_mode: CommandModeConfig
     # Raw per-app overrides keyed by Hyprland window class. Consumed by
     # app_context.select_app_style and mode.resolve_mode, so the shape stays
     # flexible (style / mode / future knobs) without a dedicated dataclass per
@@ -452,6 +460,12 @@ def load_config(config_path: Optional[str] = None) -> Config:
         enabled=app_ctx_raw.get("enabled", False),
         max_title_chars=app_ctx_raw.get("max_title_chars", 200),
     )
+    cmd_raw = llm_raw.get("command_mode", {})
+    command_mode = CommandModeConfig(
+        enabled=cmd_raw.get("enabled", False),
+        selection_source=cmd_raw.get("selection_source", "primary"),
+        temperature=cmd_raw.get("temperature", 0.2),
+    )
     # `apps` is a nested table map like `[llm_postprocess.apps.Alacritty]`;
     # tomllib surfaces it as a nested dict here. Keys are Hyprland window
     # classes; values carry per-app `style` and/or `mode` overrides.
@@ -470,6 +484,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         prompt_template_path=llm_raw.get("prompt_template_path", ""),
         app_context=app_context,
         apps=apps_raw,
+        command_mode=command_mode,
     )
 
     return Config(

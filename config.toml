@@ -301,6 +301,25 @@ audit_log = "/tmp/mumble_postprocess.jsonl"
 # prompt. Empty = use built-in (FreeFlow-pattern cleanup prompt).
 prompt_template_path = ""
 
+[llm_postprocess.command_mode]
+# Voice command mode: transforms the currently-selected text according to
+# a spoken instruction. Depends on llm_postprocess.enabled = true.
+#
+# Suggested Hyprland bind:
+#   bind = SUPER CTRL, D, exec, mumble command
+# which sends `COMMAND` to the daemon IPC socket.
+enabled = false
+
+# Selections are captured with `wl-paste -p` (primary) by default; set to
+# "clipboard" to use the regular clipboard instead (requires the user to
+# Ctrl+C first). "primary" matches Wayland's mouse-select convention.
+selection_source = "primary"
+
+# Temperature for command-mode transforms. Higher than cleanup (0.0)
+# because command mode is explicitly transformative (rewrite, translate,
+# summarize).
+temperature = 0.2
+
 [llm_postprocess.app_context]
 # Per-app context injection (Hyprland-only, optional).
 # Shells to `hyprctl activewindow -j`, appends the focused window's class
