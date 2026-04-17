@@ -250,6 +250,12 @@ class WhisperDaemon:
         self.default_mode: str | None = None
         # Active mode for the current/next recording, consumed on stop.
         self.active_mode: str | None = None
+        # Command-mode state. When the next recording is a voice command,
+        # we capture the selection at START time, store it here, and the
+        # transcription thread uses it as the "selected text" input to
+        # the LLM transform. Cleared after each turn.
+        self.command_mode_pending = False
+        self.command_mode_selection: str = ""
 
         # Server mode from config
         self.server_mode = config.daemon.mode == "server"
@@ -354,11 +360,40 @@ class WhisperDaemon:
         except Exception as e:
             self.logger.warning(f"Could not show notification: {e}")
 
-    def start_recording(self, mode: str | None = None) -> str:
-        """Start audio recording. `mode` overrides the session default."""
+    def start_recording(
+        self, mode: str | None = None, command_mode: bool = False
+    ) -> str:
+        """Start audio recording. `mode` overrides the session default.
+
+        When `command_mode=True`, the daemon captures the current Wayland
+        selection immediately (so a slow user doesn't lose it before
+        stopping) and routes the transcribed instruction through the
+        LLM voice-command path on stop.
+        """
         if self.recording:
             self.logger.warning("Already recording")
             return "ALREADY_RECORDING"
+
+        if command_mode:
+            if not self.config.llm_postprocess.command_mode.enabled:
+                self.logger.warning(
+                    "COMMAND received but llm_postprocess.command_mode is disabled"
+                )
+                return "COMMAND_MODE_DISABLED"
+            if self.llm_processor is None:
+                self.logger.warning(
+                    "COMMAND received but LLM postprocess is not enabled"
+                )
+                return "LLM_DISABLED"
+            self.command_mode_selection = self._capture_selection()
+            self.command_mode_pending = True
+            self.logger.info(
+                f"Command mode: captured {len(self.command_mode_selection)} "
+                "chars of selection"
+            )
+        else:
+            self.command_mode_pending = False
+            self.command_mode_selection = ""
 
         self.active_mode = mode if mode is not None else self.default_mode
         self.recording = True
@@ -416,6 +451,71 @@ class WhisperDaemon:
         else:
             self.logger.warning("No audio recorded")
 
+    def _handle_command_mode(self, voice_instruction: str):
+        """Apply a voice instruction to the stored selection via the LLM.
+
+        Posts the transformed text back over the selection using the
+        clipboard path (wtype is unreliable for multi-line replacements).
+        Clears command-mode state regardless of outcome.
+        """
+        selection = self.command_mode_selection
+        self.command_mode_pending = False
+        self.command_mode_selection = ""
+
+        if not selection.strip():
+            self.logger.warning("Command mode: empty selection; ignoring")
+            self._notify("Command mode: empty selection", urgency="critical")
+            return
+
+        outcome = self.llm_processor.transform_command(
+            selected_text=selection,
+            voice_instruction=voice_instruction,
+            temperature=self.config.llm_postprocess.command_mode.temperature,
+        )
+        if outcome.error:
+            self.logger.warning(
+                f"Command mode LLM failed ({outcome.error}); selection untouched"
+            )
+            self._notify("Command mode failed", urgency="critical")
+            return
+
+        self.logger.info(
+            f"Command-mode transform in {outcome.latency_ms}ms: "
+            f"instr='{voice_instruction[:40]}' "
+            f"sel={len(selection)}ch -> out={len(outcome.cleaned)}ch"
+        )
+        paste_via_clipboard(
+            outcome.cleaned,
+            typer=self.config.wayland.typer,
+            wl_copy=self.config.wayland.wl_copy,
+            wl_paste=self.config.wayland.wl_paste,
+            logger=self.logger,
+        )
+        self._notify(
+            f"Command applied: {outcome.cleaned[:40]}...", urgency="low"
+        )
+
+    def _capture_selection(self) -> str:
+        """Read the current selection for command mode.
+
+        `selection_source = "primary"` reads the Wayland PRIMARY selection
+        (text highlighted with the mouse). `"clipboard"` uses the regular
+        clipboard (user must Ctrl+C first). Returns "" on any failure.
+        """
+        source = self.config.llm_postprocess.command_mode.selection_source
+        cmd = [self.config.wayland.wl_paste, "-n"]
+        if source == "primary":
+            cmd.append("-p")
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=1
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(f"wl-paste selection capture failed: {e}")
+        return ""
+
     def _transcribe_and_type(self, audio_data):
         """Transcribe audio and type the result."""
         sample_rate = self.config.audio.sample_rate
@@ -434,6 +534,19 @@ class WhisperDaemon:
             # Clean artifacts (e.g., leading --)
             if text:
                 text = self.config.transcription.clean_text(text)
+
+            # Voice-command mode: treat the transcript as an instruction
+            # applied to the selection captured at START time. Paste the
+            # result over the selection. Branches before the cleanup path
+            # because the command flow uses its own prompt + temperature.
+            if (
+                text
+                and self.command_mode_pending
+                and self.llm_processor is not None
+                and self.config.llm_postprocess.command_mode.enabled
+            ):
+                self._handle_command_mode(text)
+                return
 
             # Optional LLM cleanup pass (feature-flagged off by default).
             # On any failure the processor returns the original text, so the
@@ -654,6 +767,12 @@ class WhisperDaemon:
 
         if verb == "START":
             return self.start_recording(mode=mode_override)
+        if verb == "COMMAND":
+            # Voice command: if we're already recording this is a press-
+            # to-stop, same as STOP. Otherwise we begin a command-mode turn.
+            if self.recording:
+                return self.stop_recording()
+            return self.start_recording(command_mode=True)
         if verb == "STOP":
             return self.stop_recording()
         if verb == "STATUS":
