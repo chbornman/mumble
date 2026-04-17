@@ -17,6 +17,7 @@ from pathlib import Path
 
 from config_loader import load_config
 from whisper_daemon import StreamDeduplicator
+from word_dedup import WordLevelDeduplicator
 
 # Load config
 try:
@@ -40,8 +41,15 @@ noise_re = re.compile(config.streaming.noise_filter_pattern, re.IGNORECASE)
 # Wayland typer command from config
 typer = config.wayland.typer
 
-# Initialize deduplicator
-dedup = StreamDeduplicator(config, logger)
+# Initialize deduplicator. Legacy character-overlap class remains the
+# default; users opt into the word-level rewrite via
+# `streaming.legacy_dedup = false`.
+if config.streaming.legacy_dedup:
+    dedup = StreamDeduplicator(config, logger)
+    logger.info("stream dedup: using legacy StreamDeduplicator")
+else:
+    dedup = WordLevelDeduplicator(config, logger)
+    logger.info("stream dedup: using WordLevelDeduplicator")
 
 
 def type_text(text: str) -> bool:

@@ -188,6 +188,20 @@ max_fallback_sentence_length = 100
 # Noise filter regex (lines matching this are filtered out)
 noise_filter_pattern = "^\\s*(\\(.*\\)|\\[.*\\]|\\*.*\\*)\\s*$"
 
+# Stream deduplicator selection. `true` uses the legacy character-overlap
+# StreamDeduplicator (default — preserves existing behavior). `false`
+# switches to WordLevelDeduplicator: word-level diff + immediate-repeat
+# suppression, designed to fix the mid-phrase-pause dupe.
+legacy_dedup = true
+
+# Word-level dedup tuning (only consumed when legacy_dedup = false).
+# `word_overlap_lookback` — max suffix-word length searched for overlap.
+# `immediate_repeat_window` — words of committed tail checked for repeat
+# suppression. Defaults tuned against technical.txt calibration.
+word_overlap_lookback = 15
+immediate_repeat_window = 8
+max_committed_words = 200
+
 [streaming.debug]
 # Debug log file for streaming deduplication
 log_file = "/tmp/whisper_stream_debug.log"

@@ -135,6 +135,10 @@ class StreamingConfig:
     max_fallback_sentence_length: int
     noise_filter_pattern: str
     debug: StreamingDebugConfig
+    legacy_dedup: bool
+    word_overlap_lookback: int
+    immediate_repeat_window: int
+    max_committed_words: int
 
 
 @dataclass
@@ -409,6 +413,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
         max_fallback_sentence_length=stream_raw["max_fallback_sentence_length"],
         noise_filter_pattern=stream_raw["noise_filter_pattern"],
         debug=streaming_debug,
+        legacy_dedup=stream_raw.get("legacy_dedup", True),
+        word_overlap_lookback=stream_raw.get("word_overlap_lookback", 15),
+        immediate_repeat_window=stream_raw.get("immediate_repeat_window", 8),
+        max_committed_words=stream_raw.get("max_committed_words", 200),
     )
 
     # Wayland
