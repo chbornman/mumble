@@ -172,6 +172,12 @@ class BuildConfig:
 
 
 @dataclass
+class AppContextConfig:
+    enabled: bool
+    max_title_chars: int
+
+
+@dataclass
 class LLMPostprocessConfig:
     enabled: bool
     backend: str
@@ -182,6 +188,12 @@ class LLMPostprocessConfig:
     timeout: int
     audit_log: str
     prompt_template_path: str
+    app_context: AppContextConfig
+    # Raw per-app overrides keyed by Hyprland window class. Consumed by
+    # app_context.select_app_style and mode.resolve_mode, so the shape stays
+    # flexible (style / mode / future knobs) without a dedicated dataclass per
+    # app entry.
+    apps: dict
 
 
 @dataclass
@@ -429,6 +441,17 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     # LLM post-processing (optional, off by default)
     llm_raw = raw.get("llm_postprocess", {})
+    app_ctx_raw = llm_raw.get("app_context", {})
+    app_context = AppContextConfig(
+        enabled=app_ctx_raw.get("enabled", False),
+        max_title_chars=app_ctx_raw.get("max_title_chars", 200),
+    )
+    # `apps` is a nested table map like `[llm_postprocess.apps.Alacritty]`;
+    # tomllib surfaces it as a nested dict here. Keys are Hyprland window
+    # classes; values carry per-app `style` and/or `mode` overrides.
+    apps_raw = llm_raw.get("apps", {})
+    if not isinstance(apps_raw, dict):
+        apps_raw = {}
     llm_postprocess = LLMPostprocessConfig(
         enabled=llm_raw.get("enabled", False),
         backend=llm_raw.get("backend", "llama.cpp"),
@@ -439,6 +462,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
         timeout=llm_raw.get("timeout", 10),
         audit_log=llm_raw.get("audit_log", "/tmp/mumble_postprocess.jsonl"),
         prompt_template_path=llm_raw.get("prompt_template_path", ""),
+        app_context=app_context,
+        apps=apps_raw,
     )
 
     return Config(

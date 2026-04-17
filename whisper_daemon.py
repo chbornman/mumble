@@ -25,6 +25,11 @@ import numpy as np
 import scipy.io.wavfile as wavfile
 import sounddevice as sd
 
+from app_context import (
+    detect_app_context,
+    format_context_block,
+    select_app_style,
+)
 from config_loader import Config, load_config
 from glossary import Glossary, format_whisper_prompt, load_glossary
 from llm_postprocess import LLMPostProcessor
@@ -425,9 +430,22 @@ class WhisperDaemon:
             # On any failure the processor returns the original text, so the
             # user's dictation never hard-breaks on a misconfigured endpoint.
             if text and self.llm_processor is not None:
+                context_block = None
+                style_block = None
+                if self.config.llm_postprocess.app_context.enabled:
+                    ctx = detect_app_context()
+                    context_block = format_context_block(
+                        ctx,
+                        max_title_chars=self.config.llm_postprocess.app_context.max_title_chars,
+                    ) or None
+                    style = select_app_style(ctx, self.config.llm_postprocess.apps)
+                    if style:
+                        style_block = f"App-specific style hint: {style}"
                 outcome = self.llm_processor.process(
                     text,
                     glossary=self.glossary,
+                    context_block=context_block,
+                    mode_block=style_block,
                     audio_file=Path(temp_file).name,
                 )
                 if outcome.error:
