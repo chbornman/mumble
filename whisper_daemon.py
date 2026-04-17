@@ -33,6 +33,7 @@ from app_context import (
 from config_loader import Config, load_config
 from glossary import Glossary, format_whisper_prompt, load_glossary
 from llm_postprocess import LLMPostProcessor
+from modes import available_modes, resolve_mode_block, resolve_mode_for_app
 
 try:
     import requests
@@ -242,6 +243,12 @@ class WhisperDaemon:
         self.audio_queue = queue.Queue()
         self.server_socket = None
         self.whisper_server_process = None
+        # Default mode for the session; overridden per-turn via IPC
+        # (`START:mode=commit`) or by per-app config. `None` = base
+        # cleanup prompt only.
+        self.default_mode: str | None = None
+        # Active mode for the current/next recording, consumed on stop.
+        self.active_mode: str | None = None
 
         # Server mode from config
         self.server_mode = config.daemon.mode == "server"
@@ -346,12 +353,13 @@ class WhisperDaemon:
         except Exception as e:
             self.logger.warning(f"Could not show notification: {e}")
 
-    def start_recording(self) -> str:
-        """Start audio recording."""
+    def start_recording(self, mode: str | None = None) -> str:
+        """Start audio recording. `mode` overrides the session default."""
         if self.recording:
             self.logger.warning("Already recording")
             return "ALREADY_RECORDING"
 
+        self.active_mode = mode if mode is not None else self.default_mode
         self.recording = True
         Path(self.config.daemon.recording_flag).touch()
 
@@ -431,21 +439,45 @@ class WhisperDaemon:
             # user's dictation never hard-breaks on a misconfigured endpoint.
             if text and self.llm_processor is not None:
                 context_block = None
-                style_block = None
+                app_class: str | None = None
+                style_hint: str | None = None
                 if self.config.llm_postprocess.app_context.enabled:
                     ctx = detect_app_context()
+                    app_class = ctx.app_class
                     context_block = format_context_block(
                         ctx,
                         max_title_chars=self.config.llm_postprocess.app_context.max_title_chars,
                     ) or None
-                    style = select_app_style(ctx, self.config.llm_postprocess.apps)
-                    if style:
-                        style_block = f"App-specific style hint: {style}"
+                    style_hint = select_app_style(
+                        ctx, self.config.llm_postprocess.apps
+                    )
+
+                # Mode precedence: explicit per-turn > session default > per-app default.
+                chosen_mode = (
+                    self.active_mode
+                    or self.default_mode
+                    or resolve_mode_for_app(
+                        app_class, self.config.llm_postprocess.apps
+                    )
+                )
+                mode_block = resolve_mode_block(chosen_mode)
+                if chosen_mode and mode_block is None:
+                    self.logger.warning(
+                        f"Unknown mode '{chosen_mode}'; falling back to base prompt"
+                    )
+                if style_hint:
+                    style_block = f"App-specific style hint: {style_hint}"
+                    mode_block = (
+                        style_block
+                        if mode_block is None
+                        else f"{mode_block}\n{style_block}"
+                    )
+
                 outcome = self.llm_processor.process(
                     text,
                     glossary=self.glossary,
                     context_block=context_block,
-                    mode_block=style_block,
+                    mode_block=mode_block,
                     audio_file=Path(temp_file).name,
                 )
                 if outcome.error:
@@ -472,6 +504,9 @@ class WhisperDaemon:
             self.logger.error(f"Transcription error: {e}")
         finally:
             os.unlink(temp_file)
+            # Per-turn mode is cleared once the turn completes so the
+            # override does not leak into the next recording.
+            self.active_mode = None
 
     def _transcribe_cli(self, audio_file: str) -> str:
         """Transcribe using whisper-cli (loads model each time)."""
@@ -575,22 +610,49 @@ class WhisperDaemon:
             self.logger.error(f"Typing error: {e}")
 
     def handle_command(self, command: str) -> str:
-        """Handle IPC command."""
-        command = command.strip().upper()
+        """Handle IPC command.
 
-        if command == "START":
-            return self.start_recording()
-        elif command == "STOP":
+        Wire format (backward compatible):
+          START | STOP | STATUS | TOGGLE
+          START mode=commit         (per-turn preset override)
+          TOGGLE mode=email
+          SET_MODE commit           (sets the session default)
+          SET_MODE none             (clears the session default)
+        """
+        raw = command.strip()
+        if not raw:
+            return "UNKNOWN_COMMAND"
+        parts = raw.split(None, 1)
+        verb = parts[0].upper()
+        tail = parts[1].strip() if len(parts) > 1 else ""
+
+        mode_override: str | None = None
+        if tail.lower().startswith("mode="):
+            mode_override = tail.split("=", 1)[1].strip() or None
+
+        if verb == "START":
+            return self.start_recording(mode=mode_override)
+        if verb == "STOP":
             return self.stop_recording()
-        elif command == "STATUS":
-            return "RECORDING" if self.recording else "READY"
-        elif command == "TOGGLE":
+        if verb == "STATUS":
+            base = "RECORDING" if self.recording else "READY"
+            if self.default_mode:
+                base = f"{base} mode={self.default_mode}"
+            return base
+        if verb == "TOGGLE":
             if self.recording:
                 return self.stop_recording()
-            else:
-                return self.start_recording()
-        else:
-            return "UNKNOWN_COMMAND"
+            return self.start_recording(mode=mode_override)
+        if verb == "SET_MODE":
+            new_mode = tail.strip().lower() or None
+            if new_mode in (None, "none", ""):
+                self.default_mode = None
+                return "MODE_CLEARED"
+            if new_mode not in available_modes():
+                return f"UNKNOWN_MODE {new_mode}"
+            self.default_mode = new_mode
+            return f"MODE_SET {new_mode}"
+        return "UNKNOWN_COMMAND"
 
     def _handle_client(self, client_socket: socket.socket):
         """Handle client connection."""
@@ -729,6 +791,15 @@ def main():
         "--no-notifications", "-n", action="store_true", help="Disable notifications"
     )
     parser.add_argument("--vocab-file", "-v", help="Override vocab file path")
+    parser.add_argument(
+        "--mode",
+        choices=available_modes() + ["none"],
+        default=None,
+        help=(
+            "Default LLM post-processing mode for this session "
+            "(overridden per-turn via IPC `START mode=<name>`)"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -752,6 +823,9 @@ def main():
     logger = setup_logging(config)
 
     daemon = WhisperDaemon(config=config, logger=logger)
+    if args.mode and args.mode != "none":
+        daemon.default_mode = args.mode
+        logger.info(f"Default mode: {args.mode}")
     daemon.start()
 
 
