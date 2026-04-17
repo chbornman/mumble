@@ -289,3 +289,26 @@ audit_log = "/tmp/mumble_postprocess.jsonl"
 # Optional path to a file whose contents replace the built-in base system
 # prompt. Empty = use built-in (FreeFlow-pattern cleanup prompt).
 prompt_template_path = ""
+
+[llm_postprocess.app_context]
+# Per-app context injection (Hyprland-only, optional).
+# Shells to `hyprctl activewindow -j`, appends the focused window's class
+# and title to the LLM prompt as untrusted metadata (wording lifted from
+# Tambourine's DictationContextManager). Gracefully degrades when
+# HYPRLAND_INSTANCE_SIGNATURE is unset.
+enabled = false
+
+# Max window title chars kept in the prompt (bounds growth on pathological
+# browser tabs or editor titles).
+max_title_chars = 200
+
+# Optional per-app style/mode overrides, keyed by Hyprland window class.
+# When the focused class matches, the `style` is appended to the cleanup
+# prompt; the `mode` selects a preset transform (see item #3).
+#
+# [llm_postprocess.apps.Alacritty]
+# style = "terse; user is in a terminal; no extra punctuation"
+#
+# [llm_postprocess.apps.thunderbird]
+# style = "formal email prose; full sentences"
+# mode = "email"
