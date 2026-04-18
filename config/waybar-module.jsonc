@@ -1,10 +1,10 @@
 {
     "custom/whisper": {
-        "exec": "~/projects/asahi-whisper-daemon/waybar_whisper.py",
+        "exec": "~/projects/mumble/waybar_whisper.py",
         "return-type": "json",
         "format": "{}",
-        "on-click": "~/projects/asahi-whisper-daemon/toggle_stream.sh",
-        "on-click-right": "~/projects/asahi-whisper-daemon/switch_model.sh",
+        "on-click": "~/projects/mumble/toggle_stream.sh",
+        "on-click-right": "~/projects/mumble/toggle_llm.sh",
         "tooltip": true
     }
 }

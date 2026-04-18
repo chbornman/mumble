@@ -130,7 +130,7 @@ temperature = 0.0
 temperature_increment = 0.2
 
 # CLI mode timeout per transcription (seconds)
-cli_timeout = 60
+cli_timeout = 300
 
 # Server mode request timeout (seconds)
 server_timeout = 30
@@ -228,7 +228,7 @@ typer = "wtype"
 # longer than this, mumble copies via `wl-copy`, synthesizes Ctrl+V via
 # wtype, and restores the previous clipboard — `wtype` gets flaky on
 # long inputs. 0 disables the clipboard path entirely (always use typer).
-clipboard_paste_threshold = 0
+clipboard_paste_threshold = 500
 
 # Clipboard tooling (Wayland). Only consumed when
 # clipboard_paste_threshold > 0.
@@ -277,7 +277,7 @@ build_sdl2 = true
 #
 # Off by default. Enable only after pointing `endpoint` at a running LLM
 # server. Any HTTP failure falls back to the raw Whisper transcript.
-enabled = false
+enabled = true
 
 # Backend hint ("llama.cpp", "ollama", "lmstudio", "vllm"). Informational only;
 # all backends are called via the OpenAI-compatible /v1/chat/completions API.
@@ -287,23 +287,22 @@ backend = "llama.cpp"
 # llama.cpp server default:  http://127.0.0.1:8090/v1/chat/completions
 # Ollama (OpenAI shim):      http://127.0.0.1:11434/v1/chat/completions
 # LM Studio default:         http://127.0.0.1:1234/v1/chat/completions
-endpoint = "http://127.0.0.1:8090/v1/chat/completions"
+endpoint = "http://127.0.0.1:19999/v1/chat/completions"
 
-# Model name as the server knows it. Recommended local models on 16 GB VRAM:
-#   Qwen3-4B-Instruct (Q5_K_M, ~3 GB)     — fast, strong at constrained edits
-#   Phi-4-mini (3.8B)                     — low latency
-#   Llama-3.1-8B-Instruct (Q4_K_M, ~5 GB) — well-understood baseline
-#   Hermes-3-Llama-3.1-8B                 — cited for this exact use case
-model = "qwen3-4b-instruct"
+# Model name as the server knows it. Using Nemotron Nano-4B for ultra-fast cleanup.
+# nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M (~3.5GB, Mamba hybrid)
+model = "NVIDIA-Nemotron-3-Nano-4B"
 
-# Cap on generated tokens. 512 comfortably covers multi-sentence dictation.
-max_tokens = 512
+# Cap on generated tokens. 2048 covers ~2600 words of cleanup output,
+# comfortable for multi-minute theorizing-out-loud recordings.
+max_tokens = 2048
 
 # Greedy decoding. Cleanup is a constrained-edit task; sampling adds drift.
 temperature = 0.0
 
-# HTTP request timeout (seconds). Expected latency on a 5080 is 0.3-1.5s.
-timeout = 10
+# HTTP request timeout (seconds). Expected latency on a 5080 is 0.3-1.5s
+# for short inputs; long cleanups (2000+ tokens) can take several seconds.
+timeout = 30
 
 # JSONL audit log — one row per turn:
 #   {timestamp, audio_file, raw_transcript, prompt, context, mode,
