@@ -257,6 +257,10 @@ class WhisperDaemon:
         self.command_mode_pending = False
         self.command_mode_selection: str = ""
 
+        # MPRIS players paused on dictation start; resumed on stop. Tracked
+        # per-player so already-paused media doesn't get woken up on stop.
+        self._paused_players: list[str] = []
+
         # Server mode from config
         self.server_mode = config.daemon.mode == "server"
 
@@ -360,6 +364,52 @@ class WhisperDaemon:
         except Exception as e:
             self.logger.warning(f"Could not show notification: {e}")
 
+    def _pause_media_players(self) -> None:
+        """Pause MPRIS players that are currently Playing (YouTube, mpv, Spotify, etc.).
+
+        Records which players were paused so `_resume_media_players` only
+        resumes those — avoiding un-pausing media the user had already paused.
+        Silently no-ops if `playerctl` is missing or errors; dictation must
+        not block on media control.
+        """
+        self._paused_players = []
+        try:
+            listing = subprocess.run(
+                ["playerctl", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.logger.debug(f"playerctl unavailable, skipping media pause: {e}")
+            return
+        if listing.returncode != 0:
+            return
+        for player in filter(None, (p.strip() for p in listing.stdout.splitlines())):
+            try:
+                status = subprocess.run(
+                    ["playerctl", "-p", player, "status"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1,
+                )
+                if status.returncode == 0 and status.stdout.strip() == "Playing":
+                    subprocess.run(
+                        ["playerctl", "-p", player, "pause"], timeout=1
+                    )
+                    self._paused_players.append(player)
+            except subprocess.TimeoutExpired as e:
+                self.logger.debug(f"playerctl timed out for {player}: {e}")
+
+    def _resume_media_players(self) -> None:
+        """Resume players that `_pause_media_players` paused on dictation start."""
+        for player in self._paused_players:
+            try:
+                subprocess.run(["playerctl", "-p", player, "play"], timeout=1)
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                self.logger.debug(f"playerctl resume failed for {player}: {e}")
+        self._paused_players = []
+
     def start_recording(
         self, mode: str | None = None, command_mode: bool = False
     ) -> str:
@@ -399,6 +449,7 @@ class WhisperDaemon:
         self.recording = True
         Path(self.config.daemon.recording_flag).touch()
 
+        self._pause_media_players()
         self._play_sound(self.start_sound)
         self._notify("Recording started... Press SUPER+D to stop")
 
@@ -417,6 +468,7 @@ class WhisperDaemon:
         Path(self.config.daemon.recording_flag).unlink(missing_ok=True)
 
         self._play_sound(self.stop_sound)
+        self._resume_media_players()
         self._notify("Recording stopped - transcribing...")
 
         self.logger.info("Recording stopped")
