@@ -3,7 +3,7 @@
         "exec": "~/projects/mumble/waybar_whisper.py",
         "return-type": "json",
         "format": "{}",
-        "on-click": "~/projects/mumble/toggle_stream.sh",
+        "on-click": "~/projects/mumble/mumble stream",
         "on-click-right": "~/projects/mumble/toggle_llm.sh",
         "tooltip": true
     }

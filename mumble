@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# mumble - thin CLI for the mumble dictation daemon.
+#
+# A self-contained IPC client + environment doctor. It does NOT import the heavy
+# daemon deps; it speaks the same text protocol the keybind scripts use (TOGGLE,
+# STREAM, STATUS, SET_MODE) over the daemon's unix socket, reading the socket
+# path from config via the project's .venv/bin/python + config_loader.
+#
+# Usage:
+#   mumble toggle             Press-to-talk dictation (sends TOGGLE)
+#   mumble stream             Toggle live streaming     (sends STREAM)
+#   mumble status             Print daemon status       (sends STATUS)
+#   mumble mode <name|none>   Set processing mode       (sends SET_MODE)
+#   mumble doctor             Environment preflight (diagnostic only)
+
+set -euo pipefail
+
+# Resolve the real project directory even when invoked via a symlink.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+VENV_PY="$PROJECT_DIR/.venv/bin/python"
+CONFIG_FILE="$PROJECT_DIR/config.toml"
+
+# Pick the python used to read config: prefer the project venv, fall back to
+# system python3 (config_loader only needs the stdlib).
+config_python() {
+    if [ -x "$VENV_PY" ]; then
+        echo "$VENV_PY"
+    else
+        command -v python3
+    fi
+}
+
+# Read one config value via config_loader, evaluating the given expression on
+# the loaded Config object `c`. Empty on failure.
+config_get() {
+    local expr="$1"
+    "$(config_python)" -c "
+import sys
+sys.path.insert(0, '$PROJECT_DIR')
+from config_loader import load_config
+c = load_config('$CONFIG_FILE')
+print($expr)
+" 2>/dev/null || true
+}
+
+socket_path() {
+    local sp
+    sp="$(config_get 'c.daemon.socket_path')"
+    [ -n "$sp" ] && echo "$sp" || echo "/tmp/whisper_daemon.sock"
+}
+
+# Send a verb to the daemon socket and stream the reply to stdout.
+send_verb() {
+    local verb="$1"
+    local sock
+    sock="$(socket_path)"
+    if [ ! -S "$sock" ]; then
+        echo "mumble: daemon not running (socket $sock missing)." >&2
+        echo "        Start it with: systemctl --user start mumble.service" >&2
+        # Invoked from a keybind (no terminal): surface the failure visibly.
+        if [ ! -t 2 ] && command -v notify-send &>/dev/null; then
+            notify-send -u critical "mumble" "Daemon not running — start mumble.service first."
+        fi
+        exit 1
+    fi
+    printf '%s\n' "$verb" | ncat -U "$sock"
+}
+
+usage() {
+    sed -n '9,14p' "$SOURCE" | sed 's/^# \{0,1\}//'
+}
+
+# ---------------------------------------------------------------------------
+# doctor: read-only environment preflight. Reports PASS/WARN/FAIL only; it must
+# never change any state.
+# ---------------------------------------------------------------------------
+DOCTOR_FAIL=0
+
+c_green=$'\033[0;32m'; c_yellow=$'\033[1;33m'; c_red=$'\033[0;31m'; c_reset=$'\033[0m'
+
+# Use printf %b so the color escape sequences render reliably.
+ok()   { printf '  %b✓%b %s\n' "$c_green" "$c_reset" "$1"; }
+warn() { printf '  %b⚠%b %s\n' "$c_yellow" "$c_reset" "$1"; [ -n "${2:-}" ] && printf '      fix: %s\n' "$2"; }
+fail() { printf '  %b✗%b %s\n' "$c_red" "$c_reset" "$1"; [ -n "${2:-}" ] && printf '      fix: %s\n' "$2"; DOCTOR_FAIL=1; }
+
+doctor() {
+    echo "mumble doctor — environment preflight"
+    echo "  project: $PROJECT_DIR"
+    echo ""
+
+    # --- Text injector (pluggable: any one of wtype/xdotool/ydotool) ---
+    echo "Text injection:"
+    local typer found=""
+    typer="$(config_get 'c.wayland.typer')"
+    for inj in wtype xdotool ydotool; do
+        command -v "$inj" &>/dev/null && found="${found:+$found }$inj"
+    done
+    if [ -n "$found" ]; then
+        ok "text injector available: $found (config wayland.typer = ${typer:-unknown})"
+        if [ -n "$typer" ] && [ "$typer" != "auto" ] && ! command -v "$typer" &>/dev/null; then
+            warn "configured typer '$typer' is not installed (will fall back if 'auto')" \
+                 "install '$typer' or set wayland.typer to one of: $found"
+        fi
+    else
+        fail "no text injector found (need one of: wtype, xdotool, ydotool)" \
+             "Arch: sudo pacman -S wtype  |  Debian: sudo apt install wtype  |  Fedora: sudo dnf install wtype  (xdotool for X11)"
+    fi
+
+    # --- wl-clipboard ---
+    echo ""
+    echo "Clipboard:"
+    local wlcopy wlpaste
+    wlcopy="$(config_get 'c.wayland.wl_copy')"; wlcopy="${wlcopy:-wl-copy}"
+    wlpaste="$(config_get 'c.wayland.wl_paste')"; wlpaste="${wlpaste:-wl-paste}"
+    if command -v "$wlcopy" &>/dev/null && command -v "$wlpaste" &>/dev/null; then
+        ok "wl-clipboard present ($wlcopy / $wlpaste)"
+    else
+        fail "wl-clipboard missing ($wlcopy / $wlpaste)" \
+             "Arch: sudo pacman -S wl-clipboard  |  Debian/Fedora: install wl-clipboard"
+    fi
+
+    # --- ffmpeg / ncat ---
+    echo ""
+    echo "Core tools:"
+    if command -v ffmpeg &>/dev/null; then ok "ffmpeg present"
+    else fail "ffmpeg missing" "install ffmpeg with your package manager"; fi
+    if command -v ncat &>/dev/null; then ok "ncat present"
+    else fail "ncat missing (needed to talk to the daemon socket)" "Arch: sudo pacman -S nmap  |  Debian/Fedora: install nmap-ncat"; fi
+
+    # --- whisper.cpp binaries ---
+    echo ""
+    echo "whisper.cpp binaries:"
+    local cli server stream
+    cli="$(config_get 'c.whisper_cli_path')"
+    server="$(config_get 'c.whisper_server_path')"
+    stream="$(config_get 'c.whisper_stream_path')"
+    for pair in "whisper-cli:$cli" "whisper-server:$server" "whisper-stream:$stream"; do
+        local name="${pair%%:*}" path="${pair#*:}"
+        if [ -z "$path" ]; then
+            warn "$name path could not be read from config"
+        elif [ -x "$path" ]; then
+            ok "$name: $path"
+        elif [ -e "$path" ]; then
+            warn "$name exists but is not executable: $path" "chmod +x '$path'"
+        else
+            fail "$name not found: $path" "build whisper.cpp: bash $PROJECT_DIR/build_whisper.sh"
+        fi
+    done
+
+    # --- model file ---
+    echo ""
+    echo "Model:"
+    local model
+    model="$(config_get 'c.model_path')"
+    if [ -z "$model" ]; then
+        warn "model path could not be read from config"
+    elif [ -f "$model" ]; then
+        ok "model present: $model"
+    else
+        fail "model file not found: $model" \
+             "download it: ./install.sh --download-model (or download-ggml-model.sh)"
+    fi
+
+    # --- Vulkan (only relevant when backend = vulkan) ---
+    echo ""
+    echo "Backend:"
+    local backend
+    backend="$(config_get 'c.backend.type')"
+    echo "  configured backend: ${backend:-unknown}"
+    if [ "$backend" = "vulkan" ]; then
+        if command -v vulkaninfo &>/dev/null; then
+            if vulkaninfo &>/dev/null; then
+                ok "vulkaninfo reports a working Vulkan setup"
+            else
+                warn "vulkaninfo present but returned an error" "check GPU drivers / Vulkan ICD"
+            fi
+        else
+            warn "vulkaninfo not found (cannot verify Vulkan GPU support)" "install vulkan-tools"
+        fi
+    fi
+
+    # --- mumble.service + daemon socket ---
+    echo ""
+    echo "Daemon (mumble.service):"
+    if command -v systemctl &>/dev/null; then
+        if systemctl --user is-active --quiet mumble.service; then
+            ok "mumble.service is active"
+        else
+            fail "mumble.service is not active" "systemctl --user start mumble.service"
+        fi
+    else
+        warn "systemctl not available; cannot check mumble.service"
+    fi
+    local sock
+    sock="$(socket_path)"
+    if [ -S "$sock" ]; then
+        ok "daemon socket live: $sock"
+    else
+        fail "daemon socket missing: $sock" "start the daemon, then re-check"
+    fi
+
+    # --- optional streaming sidecar (mumble-stt) ---
+    echo ""
+    echo "Streaming sidecar (mumble-stt, optional):"
+    local sb stt_sock
+    sb="$(config_get 'c.backend.streaming_backend')"
+    stt_sock="$(config_get 'c.nemotron.socket_path')"
+    if [ "$sb" = "nemotron-streaming" ]; then
+        if command -v systemctl &>/dev/null; then
+            if systemctl --user is-active --quiet mumble-stt.service; then
+                ok "mumble-stt.service is active"
+            else
+                warn "mumble-stt.service not active (streaming will not work until started)" \
+                     "systemctl --user enable --now mumble-stt.service"
+            fi
+        fi
+        if [ -n "$stt_sock" ] && [ -S "$stt_sock" ]; then
+            ok "mumble-stt socket live: $stt_sock"
+        else
+            warn "mumble-stt socket not live: ${stt_sock:-unknown}" "start mumble-stt.service"
+        fi
+    else
+        ok "streaming_backend = ${sb:-whisper-stream} (Nemotron sidecar not required)"
+    fi
+
+    echo ""
+    if [ "$DOCTOR_FAIL" -eq 0 ]; then
+        printf '%bdoctor: no blocking failures.%b\n' "$c_green" "$c_reset"
+    else
+        printf '%bdoctor: one or more checks FAILED (see above).%b\n' "$c_red" "$c_reset"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+main() {
+    local cmd="${1:-}"
+    case "$cmd" in
+        toggle) send_verb "TOGGLE" ;;
+        stream) send_verb "STREAM" ;;
+        status) send_verb "STATUS" ;;
+        mode)
+            local m="${2:-}"
+            if [ -z "$m" ]; then
+                echo "mumble: 'mode' needs an argument: a mode name or 'none'." >&2
+                exit 1
+            fi
+            send_verb "SET_MODE $m"
+            ;;
+        doctor) doctor ;;
+        ""|-h|--help|help) usage ;;
+        *)
+            echo "mumble: unknown command '$cmd'" >&2
+            echo "" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

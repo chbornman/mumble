@@ -15,19 +15,30 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$DAEMON_DIR/config.toml"
 DRY_RUN=false
 SKIP_BUILD=false
+WITH_STREAMING=false
+DOWNLOAD_MODEL=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --dry-run)     DRY_RUN=true; shift ;;
-        --skip-build)  SKIP_BUILD=true; shift ;;
+        --dry-run)        DRY_RUN=true; shift ;;
+        --skip-build)     SKIP_BUILD=true; shift ;;
+        --with-streaming) WITH_STREAMING=true; shift ;;
+        --download-model) DOWNLOAD_MODEL=true; shift ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --dry-run      Show what would be done without making changes"
-            echo "  --skip-build   Skip building whisper.cpp (use existing build)"
-            echo "  --help         Show this help message"
+            echo "  --dry-run         Show what would be done without making changes"
+            echo "  --skip-build      Skip building whisper.cpp (use existing build)"
+            echo "  --with-streaming  Set up the OPT-IN Nemotron streaming sidecar"
+            echo "                    (heavy NeMo venv probe + mumble-stt.service)."
+            echo "                    Implied when config streaming_backend/type is"
+            echo "                    \"nemotron-streaming\". Downloads ~several GB on"
+            echo "                    first sidecar start."
+            echo "  --download-model  With --with-streaming: warm the HF model cache"
+            echo "                    during install instead of on first sidecar start."
+            echo "  --help            Show this help message"
             echo ""
             echo "Configuration is read from config.toml. Edit it before running."
             exit 0
@@ -60,7 +71,7 @@ fi
 # Read config values via Python
 log_info "Reading configuration from config.toml..."
 eval "$(python3 -c "
-import sys
+import sys, tomllib
 sys.path.insert(0, '$DAEMON_DIR')
 from config_loader import load_config
 c = load_config('$CONFIG_FILE')
@@ -68,19 +79,58 @@ print(f'WHISPER_CPP_DIR=\"{c.paths.whisper_cpp_dir}\"')
 print(f'MODELS_DIR=\"{c.paths.models_dir}\"')
 print(f'MODEL_NAME=\"{c.model.name}\"')
 print(f'BACKEND=\"{c.backend.type}\"')
+print(f'STREAMING_BACKEND=\"{getattr(c.backend, \"streaming_backend\", \"\")}\"')
+
+# The sidecar reads its own [mumble_stt] table directly (config_loader does not
+# model it). Parse the raw TOML for the few knobs the installer needs.
+with open('$CONFIG_FILE', 'rb') as f:
+    raw = tomllib.load(f)
+m = raw.get('mumble_stt', {}) if isinstance(raw.get('mumble_stt'), dict) else {}
+default_venv = '$DAEMON_DIR/.venv-stt/bin/python'
+print(f'STT_VENV_PYTHON=\"{m.get(\"venv_python\", default_venv)}\"')
+print(f'STT_MODEL=\"{m.get(\"model\", \"nvidia/nemotron-speech-streaming-en-0.6b\")}\"')
 " 2>/dev/null)" || { log_error "Failed to parse config.toml"; exit 1; }
+
+# Opt into the heavy streaming setup either via --with-streaming or when the
+# config already selects the nemotron-streaming backend. (backend.type is the
+# batch selector; streaming_backend is the streaming selector — honor either
+# landing on "nemotron-streaming" so config and flag stay consistent.)
+if [ "$STREAMING_BACKEND" = "nemotron-streaming" ] || [ "$BACKEND" = "nemotron-streaming" ]; then
+    WITH_STREAMING=true
+fi
 
 # Check prerequisites
 check_prerequisites() {
     log_info "Checking prerequisites..."
     local missing=()
-    local required_cmds=("wtype" "git" "cmake" "gcc" "uv" "python3" "ncat")
+    local required_cmds=("git" "cmake" "gcc" "uv" "python3" "ncat")
 
     for cmd in "${required_cmds[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
     done
+
+    # Text injection is a pluggable backend (config wayland.typer): any ONE of
+    # wtype (Wayland), xdotool (X11), or ydotool satisfies the requirement.
+    # Detect + report only; never auto-install with the user's package manager.
+    local injector_found=""
+    for inj in wtype xdotool ydotool; do
+        if command -v "$inj" &>/dev/null; then
+            injector_found="$inj"
+            break
+        fi
+    done
+    if [ -z "$injector_found" ]; then
+        log_error "No text injector found (need one of: wtype, xdotool, ydotool)"
+        echo "Install one for your session and package manager, e.g.:"
+        echo "  Arch:    sudo pacman -S wtype     # Wayland (xdotool for X11)"
+        echo "  Debian:  sudo apt install wtype   # Wayland (xdotool for X11)"
+        echo "  Fedora:  sudo dnf install wtype   # Wayland (xdotool for X11)"
+        echo "  X11 sessions: use xdotool instead of wtype."
+        return 1
+    fi
+    log_success "Text injector found: $injector_found"
 
     if ! command -v waybar &>/dev/null; then
         log_warn "waybar not found - status indicator will not work"
@@ -176,16 +226,90 @@ install_service() {
     run_cmd mkdir -p "$service_dir"
 
     if [ "$DRY_RUN" = false ]; then
-        cp "$DAEMON_DIR/whisper.service" "$service_dir/whisper.service"
+        cp "$DAEMON_DIR/mumble.service" "$service_dir/mumble.service"
     else
-        echo -e "${YELLOW}[DRY-RUN]${NC} Would copy whisper.service"
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would copy mumble.service"
     fi
 
     run_cmd systemctl --user daemon-reload
-    run_cmd systemctl --user enable whisper.service
-    run_cmd systemctl --user start whisper.service
+    run_cmd systemctl --user enable mumble.service
+    run_cmd systemctl --user start mumble.service
 
     log_success "Service installed and started"
+}
+
+# Setup the OPT-IN Nemotron streaming sidecar (mumble-stt).
+#
+# Heavy, GPU-only, multi-GB. Never runs unless opted in (--with-streaming or a
+# config backend already set to "nemotron-streaming"). Per the "no magic" design
+# goal: this probes and REPORTS; it does not build the heavy venv, does not
+# download the model unless --download-model is passed, and does not enable or
+# start the service (it prints the copy-paste command instead).
+setup_mumble_stt() {
+    log_info "Setting up Nemotron streaming sidecar (mumble-stt)..."
+
+    # 1. Verify the heavy venv exists. We do NOT build it silently.
+    if [ ! -x "$STT_VENV_PYTHON" ]; then
+        log_error "Heavy ASR venv not found at: $STT_VENV_PYTHON"
+        log_info "Build it (from the repo root):"
+        log_info "    python -m venv .venv-stt"
+        log_info "    .venv-stt/bin/pip install -r mumble_stt/requirements.txt"
+        log_info "or point [mumble_stt].venv_python at an existing NeMo venv."
+        return 1
+    fi
+    log_success "Heavy venv python found: $STT_VENV_PYTHON"
+
+    # 2. Probe the venv non-destructively: report torch/NeMo versions + CUDA.
+    log_info "Probing heavy venv (torch / NeMo / CUDA)..."
+    if [ "$DRY_RUN" = false ]; then
+        if "$STT_VENV_PYTHON" -c "import torch, nemo.collections.asr as a; import nemo; print(f'torch {torch.__version__}, NeMo {nemo.__version__}, cuda={torch.cuda.is_available()}' + (f' ({torch.cuda.get_device_name(0)})' if torch.cuda.is_available() else ''))" 2>/tmp/mumble_stt_probe.err; then
+            :
+        else
+            log_warn "Heavy deps probe failed (torch/nemo import error):"
+            sed 's/^/    /' /tmp/mumble_stt_probe.err 2>/dev/null | tail -n 5
+            log_info "The sidecar will not start until the venv imports cleanly."
+        fi
+    else
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would probe: $STT_VENV_PYTHON -c 'import torch, nemo.collections.asr; print(torch.cuda.is_available())'"
+    fi
+
+    # 3. Model: only warm the HF cache during install if explicitly requested.
+    #    Otherwise the first sidecar start downloads it.
+    if [ "$DOWNLOAD_MODEL" = true ]; then
+        log_info "Pre-downloading model into the HF cache: $STT_MODEL..."
+        if [ "$DRY_RUN" = false ]; then
+            if "$STT_VENV_PYTHON" -c "from nemo.collections.asr.models import ASRModel; ASRModel.from_pretrained('$STT_MODEL')" 2>/tmp/mumble_stt_model.err; then
+                log_success "Model cached: $STT_MODEL"
+            else
+                log_warn "Model pre-download failed (will retry on first sidecar start):"
+                sed 's/^/    /' /tmp/mumble_stt_model.err 2>/dev/null | tail -n 5
+            fi
+        else
+            echo -e "${YELLOW}[DRY-RUN]${NC} Would download model: $STT_MODEL"
+        fi
+    else
+        log_info "Model $STT_MODEL will be downloaded on first sidecar start"
+        log_info "(pass --download-model to warm the cache now)."
+    fi
+
+    # 4. Install the user unit (modeled on install_service / mumble.service, not
+    #    the stale whisper.service name). Copy + daemon-reload only; do NOT
+    #    enable/start a heavy GPU unit — print the command for the user instead.
+    log_info "Installing mumble-stt.service user unit..."
+    local service_dir="$HOME/.config/systemd/user"
+    run_cmd mkdir -p "$service_dir"
+    if [ "$DRY_RUN" = false ]; then
+        cp "$DAEMON_DIR/mumble-stt.service" "$service_dir/mumble-stt.service"
+    else
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would copy mumble-stt.service"
+    fi
+    run_cmd systemctl --user daemon-reload
+
+    log_success "Sidecar unit installed (not enabled/started)."
+    echo ""
+    log_info "To enable the sidecar (loads the resident model, uses GPU VRAM):"
+    echo "    systemctl --user enable --now mumble-stt.service"
+    echo "    journalctl --user -u mumble-stt.service -n 50    # if it misbehaves"
 }
 
 # Make scripts executable
@@ -199,11 +323,11 @@ make_executable() {
 test_installation() {
     log_info "Testing installation..."
 
-    if systemctl --user is-active --quiet whisper.service; then
+    if systemctl --user is-active --quiet mumble.service; then
         log_success "Whisper daemon is running"
     else
         log_error "Whisper daemon is not running"
-        echo "Check logs: journalctl --user -u whisper.service -n 50"
+        echo "Check logs: journalctl --user -u mumble.service -n 50"
         return 1
     fi
 
@@ -219,6 +343,9 @@ main() {
     echo ""
     echo "  Backend: $BACKEND"
     echo "  Model:   $MODEL_NAME"
+    if [ "$WITH_STREAMING" = true ]; then
+        echo "  Streaming: nemotron-streaming sidecar (opt-in, heavy)"
+    fi
     echo ""
 
     if [ "$DRY_RUN" = true ]; then
@@ -232,6 +359,12 @@ main() {
     setup_python_env
     make_executable
     install_service
+
+    if [ "$WITH_STREAMING" = true ]; then
+        setup_mumble_stt || log_warn "Streaming sidecar setup incomplete (see messages above)."
+    else
+        log_info "Nemotron streaming sidecar available; re-run with --with-streaming to enable (downloads ~several GB)."
+    fi
 
     if [ "$DRY_RUN" = false ]; then
         test_installation
@@ -248,7 +381,7 @@ main() {
     echo "  Right-click      waybar indicator - Switch model"
     echo ""
     echo "Config:   $CONFIG_FILE"
-    echo "Logs:     journalctl --user -u whisper.service -f"
+    echo "Logs:     journalctl --user -u mumble.service -f"
     echo "Benchmark: python3 benchmark.py"
     echo ""
 }

@@ -33,11 +33,11 @@ fi
 
 # Restart daemon
 systemctl --user daemon-reload
-systemctl --user restart whisper.service
+systemctl --user restart mumble.service
 
 sleep 1
 
-if systemctl --user is-active --quiet whisper.service; then
+if systemctl --user is-active --quiet mumble.service; then
     notify-send "Whisper Mode" "$ICON Switched to $NEW_MODE mode" -t 2000
 else
     notify-send "Whisper Mode" "Failed to restart daemon" -u critical -t 3000
