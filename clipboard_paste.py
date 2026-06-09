@@ -18,8 +18,10 @@ import logging
 import subprocess
 import time
 
+import constants
 
-def _snapshot_clipboard(wl_paste: str, timeout: float = 1.0) -> bytes | None:
+
+def _snapshot_clipboard(wl_paste: str, timeout: float = constants.CLIPBOARD_OP_TIMEOUT_SECONDS) -> bytes | None:
     """Return the current clipboard bytes, or None if unavailable.
 
     Uses `-n` to avoid a trailing newline injection and `-t` is omitted so
@@ -39,7 +41,7 @@ def _snapshot_clipboard(wl_paste: str, timeout: float = 1.0) -> bytes | None:
     return result.stdout
 
 
-def _set_clipboard(wl_copy: str, data: bytes | str, timeout: float = 1.0) -> bool:
+def _set_clipboard(wl_copy: str, data: bytes | str, timeout: float = constants.CLIPBOARD_OP_TIMEOUT_SECONDS) -> bool:
     """Write bytes/str to the clipboard via wl-copy. Returns success."""
     try:
         if isinstance(data, str):
@@ -58,45 +60,42 @@ def _set_clipboard(wl_copy: str, data: bytes | str, timeout: float = 1.0) -> boo
                 timeout=timeout,
             )
         return True
-    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+    except (
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+        subprocess.CalledProcessError,
+        OSError,
+    ):
         return False
 
 
 def paste_via_clipboard(
     text: str,
-    typer: str,
+    injector,
     wl_copy: str,
     wl_paste: str,
     logger: logging.Logger,
-    ctrl_v_settle_ms: int = 80,
+    ctrl_v_settle_ms: int = constants.CLIPBOARD_RESTORE_SETTLE_MS,
 ) -> bool:
-    """Copy `text`, synthesize Ctrl+V, then restore the previous clipboard.
+    """Copy `text`, synthesize the paste keystroke, then restore the clipboard.
 
-    Returns True if the Ctrl+V was dispatched; the restore step is
-    best-effort (always attempted, but failure is logged rather than
-    propagated since the paste already happened).
+    `injector` is a text_injector.Injector — the paste keystroke is dispatched
+    through it so this path honors the configured backend (wtype/xdotool/…)
+    instead of assuming wtype. Returns True if the paste was dispatched; the
+    restore step is best-effort.
+
+    The settle delay must outlast the focused app's clipboard read — restoring
+    too early races the paste and silently drops the text (the historical 80 ms
+    default did exactly that), so it defaults conservatively to 400 ms.
     """
     saved = _snapshot_clipboard(wl_paste)
     if not _set_clipboard(wl_copy, text):
         logger.error(f"{wl_copy} failed to set clipboard; aborting paste")
         return False
 
-    try:
-        # wtype -M / -m dispatches a modified keystroke. -M press, key, -m release.
-        subprocess.run(
-            [typer, "-M", "ctrl", "v", "-m", "ctrl"],
-            check=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        logger.error(f"{typer} not found — cannot synthesize Ctrl+V")
-        # Best-effort clipboard restore below still runs.
-    except Exception as e:
-        logger.error(f"Ctrl+V synthesis failed: {e}")
-    finally:
-        # Give the focused app a moment to read the clipboard before we
-        # overwrite it with the restored value.
-        time.sleep(ctrl_v_settle_ms / 1000.0)
-        if saved is not None and not _set_clipboard(wl_copy, saved):
-            logger.warning("Could not restore previous clipboard contents")
-    return True
+    pasted = injector.paste(modifier="ctrl", key="v")
+    # Give the focused app time to read the clipboard before we overwrite it.
+    time.sleep(ctrl_v_settle_ms / 1000.0)
+    if saved is not None and not _set_clipboard(wl_copy, saved):
+        logger.warning("Could not restore previous clipboard contents")
+    return pasted
