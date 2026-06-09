@@ -50,6 +50,19 @@ processors = 1
 # Enable flash attention (faster on supported hardware)
 flash_attention = false
 
+# Streaming engine selector — which backend handles live streaming dictation
+# (the STREAM verb / toggle_stream.sh keybind). This is SEPARATE from `type`
+# above, which selects the batch press-to-talk inference backend and is
+# untouched.
+#   "whisper-stream"     = legacy whisper.cpp rolling-buffer pipeline + stream_dedup.py.
+#                          Now daemon-owned (spawned by the daemon, not the shell
+#                          script) but behaviorally identical to before.
+#   "nemotron-streaming" = daemon-owned client to the mumble-stt sidecar, a
+#                          long-lived NeMo/Nemotron process holding the model
+#                          resident and emitting clean, punctuated FINAL segments
+#                          over a unix socket (see [nemotron] below).
+streaming_backend = "whisper-stream"
+
 [backend.cpu]
 # CPU-specific settings (used when backend.type = "cpu")
 # These are passed to whisper.cpp cmake build
@@ -89,6 +102,13 @@ channels = 1
 # Sound playback sample rate for feedback sounds (Hz)
 sound_sample_rate = 44100
 
+# Hard cap on a single recording's length, in seconds. The capture buffer is
+# held in memory and concatenated on stop, so an un-stopped recording (missed
+# toggle / dropped IPC) grows without bound and the kernel OOM-kills the daemon.
+# On hitting the cap, recording auto-stops and transcribes what it captured.
+# 1200s = 20 min (~38 MB int16) is generous for real dictation. 0 disables.
+max_recording_seconds = 1200
+
 [daemon]
 # Daemon operation mode: "cli" or "server"
 # "cli" loads model per transcription (lower memory, slower per-request)
@@ -103,9 +123,6 @@ recording_flag = "/tmp/whisper_recording"
 
 # Streaming state flag file
 streaming_flag = "/tmp/whisper_streaming"
-
-# Streaming mode PID file
-stream_pid_file = "/tmp/whisper_stream.pid"
 
 # Log file path
 log_file = "/tmp/whisper_daemon.log"
@@ -212,6 +229,86 @@ output_log = "/tmp/whisper_stream_output.log"
 # whisper-stream stderr log
 stream_log = "/tmp/whisper_stream.log"
 
+[nemotron]
+# Settings for the "nemotron-streaming" streaming backend (see
+# backend.streaming_backend above). These are ignored unless
+# backend.streaming_backend = "nemotron-streaming". The heavy NeMo model can't
+# share mumble's light venv, so it runs as a separate long-lived process
+# (mumble-stt, its own venv / mumble-stt.service) and the daemon talks to it as
+# a client over a unix socket.
+
+# Unix socket the daemon connects to to reach the mumble-stt sidecar. Must match
+# the sidecar's bind path. `%t` expands to $XDG_RUNTIME_DIR (the systemd unit
+# convention), so this default matches what the sidecar binds out of the box —
+# no per-machine tweak needed. Override here or in config.local.toml if you move it.
+socket_path = "%t/mumble-stt.sock"
+
+# If true, the daemon Popens the sidecar itself on the first STREAM when the
+# socket is absent. If false (recommended), it assumes the sidecar is already
+# running (e.g. mumble-stt.service) and only connects.
+sidecar_autostart = false
+
+# Explicit launch command for the sidecar when sidecar_autostart = true.
+# Empty string = use the installer's default launch command. Only consumed when
+# sidecar_autostart = true.
+sidecar_cmd = ""
+
+# How long to wait (seconds) for the sidecar socket to become connectable after
+# a STREAM start before giving up (and falling back if legacy_fallback = true).
+connect_timeout = 5.0
+
+# How streamed text is injected — the finals-vs-true-streaming switch:
+#   "finals" = type each FINAL segment when the model commits it (at an
+#              end-of-utterance pause). Clean and safe; text lands phrase by
+#              phrase. Tune the pause length with [mumble_stt] eou_silence_ms.
+#   "live"   = type the growing PARTIAL hypothesis as you speak, backspacing and
+#              correcting the tail when the model revises it (it needs a little
+#              lookahead, so the last word or two lags — expected). Closest to a
+#              real-time teleprompter feel. Requires a text injector that can
+#              synthesize Backspace (wtype/xdotool/ydotool all can).
+inject_mode = "finals"
+
+# If the sidecar can't be reached on STREAM start (socket missing/refused, no
+# READY within connect_timeout), fall back to the legacy whisper-stream pipeline
+# instead of hard-failing — flipping streaming_backend to "nemotron-streaming"
+# stays low-risk because a dead sidecar degrades to a working keybind.
+legacy_fallback = true
+
+[mumble_stt]
+# The Nemotron streaming sidecar (the heavy NeMo process). The daemon and the
+# sidecar read this SAME file — these keys configure the sidecar. Changes here
+# need `systemctl --user restart mumble-stt.service` to take effect (the daemon
+# restart is separate). Only consumed when streaming_backend = "nemotron-streaming".
+
+# Hugging Face model id loaded resident on the GPU.
+model = "nvidia/nemotron-speech-streaming-en-0.6b"
+
+# Audio sample rate (Hz). The model is 16 kHz; don't change unless you know why.
+sample_rate = 16000
+
+# Latency/accuracy profile for the cache-aware encoder. "default" = the model's
+# lowest-latency window ([70, 1], ~160 ms native chunk). An explicit "L,R" form
+# (e.g. "70,13") trades latency for a little more right-context accuracy.
+att_context = "default"
+
+# End-of-utterance silence in milliseconds: how long you pause before the model
+# commits a FINAL segment. Lower = snappier, more frequent finals (more
+# fragmented); higher = waits for cleaner sentence breaks. This is the main
+# "snappiness" knob for finals mode.
+eou_silence_ms = 800
+
+# Sidecar log verbosity: "debug" | "info" | "warning" | "error".
+log_level = "info"
+
+# Python interpreter of the DEDICATED heavy venv (NeMo + torch -- see
+# mumble_stt/requirements.txt for setup). Defaults to <repo>/.venv-stt/bin/python.
+# If yours lives elsewhere, set it here AND update mumble-stt.service's ExecStart.
+# venv_python = "/path/to/.venv-stt/bin/python"
+
+# socket_path is intentionally omitted: the sidecar defaults to
+# %t/mumble-stt.sock ($XDG_RUNTIME_DIR), which the daemon's [nemotron] socket_path
+# default already matches. Set it in both places only if you relocate the socket.
+
 [wayland]
 # Wayland display (for wtype and notifications)
 # "auto" tries to detect from environment
@@ -221,7 +318,13 @@ display = "wayland-1"
 # "auto" uses /run/user/<uid>
 xdg_runtime_dir = "auto"
 
-# Text input tool
+# Text injector — how transcribed text is typed into the focused window.
+# Pluggable backend (see text_injector.py):
+#   "wtype"    Wayland (default)
+#   "ydotool"  Wayland or X11 (uinput; needs ydotoold running)
+#   "xdotool"  X11
+#   "auto"     pick from $XDG_SESSION_TYPE + what's installed
+# Any other value is treated as a raw command that receives the text on stdin.
 typer = "wtype"
 
 # Clipboard-paste threshold (characters). When the transcribed text is
@@ -277,7 +380,11 @@ build_sdl2 = true
 #
 # Off by default. Enable only after pointing `endpoint` at a running LLM
 # server. Any HTTP failure falls back to the raw Whisper transcript.
-enabled = true
+#
+# Off until you have an endpoint to point it at (a resident llama-server /
+# Ollama instance — `toggle_llm.sh` shows the load/unload pattern). See
+# ARCHITECTURE.md §"LLM cleanup".
+enabled = false
 
 # Backend hint ("llama.cpp", "ollama", "lmstudio", "vllm"). Informational only;
 # all backends are called via the OpenAI-compatible /v1/chat/completions API.

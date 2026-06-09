@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+import constants
 from config_loader import load_config
 
 # Load config once at startup
@@ -25,15 +26,15 @@ if config:
     SOCKET_PATH = config.daemon.socket_path
     RECORDING_FLAG = config.daemon.recording_flag
     STREAMING_FLAG = config.daemon.streaming_flag
-    SERVICE_FILE = Path.home() / ".config/systemd/user/whisper.service"
+    SERVICE_FILE = Path.home() / ".config/systemd/user/mumble.service"
     UPDATE_INTERVAL = config.waybar.update_interval
     ICONS = config.waybar.icons
 else:
     SOCKET_PATH = "/tmp/whisper_daemon.sock"
     RECORDING_FLAG = "/tmp/whisper_recording"
     STREAMING_FLAG = "/tmp/whisper_streaming"
-    SERVICE_FILE = Path.home() / ".config/systemd/user/whisper.service"
-    UPDATE_INTERVAL = 0.5
+    SERVICE_FILE = Path.home() / ".config/systemd/user/mumble.service"
+    UPDATE_INTERVAL = constants.WAYBAR_FALLBACK_UPDATE_INTERVAL_SECONDS
     ICONS = None
 
 frame_index = 0
@@ -103,10 +104,10 @@ def get_daemon_status() -> str:
 
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
+        sock.settimeout(constants.WAYBAR_SOCKET_TIMEOUT_SECONDS)
         sock.connect(SOCKET_PATH)
         sock.send(b"STATUS")
-        response = sock.recv(1024).decode().strip()
+        response = sock.recv(constants.IPC_RECV_BUFFER_BYTES).decode().strip()
         sock.close()
 
         if response == "RECORDING":

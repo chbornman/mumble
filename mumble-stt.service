@@ -1,0 +1,30 @@
+[Unit]
+Description=mumble-stt - Nemotron streaming ASR sidecar (heavy NeMo/PyTorch engine for mumble)
+# Heavy GPU model; only meaningful once the graphical/user session is up.
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/mumble
+# Heavy ASR runs in its OWN venv (NeMo + torch; see mumble_stt/requirements.txt
+# for setup); it cannot share mumble's light venv. If your heavy venv lives
+# elsewhere, edit this path and set [mumble_stt].venv_python to match.
+ExecStart=%h/projects/mumble/.venv-stt/bin/python %h/projects/mumble/mumble_stt/server.py --config %h/projects/mumble/config.toml
+# Restart so a fatal model_load / OOM doesn't leave the backend dead silently.
+Restart=on-failure
+RestartSec=5
+# Give the multi-GB model time to load before systemd considers start failed.
+TimeoutStartSec=180
+
+# Socket lives in the user runtime dir so it is per-user and auto-cleaned.
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+# Model weights download to / load from the standard HF cache.
+Environment=HF_HOME=%h/.cache/huggingface
+# Pin the sidecar to one GPU. On multi-GPU machines, set this to the device
+# you want the ASR model on.
+Environment=CUDA_VISIBLE_DEVICES=0
+# Avoid CPU oversubscription from torch/OMP fighting the rest of the desktop.
+Environment=OMP_NUM_THREADS=4
+
+[Install]
+WantedBy=default.target

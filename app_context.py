@@ -22,6 +22,8 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+import constants
+
 
 @dataclass(frozen=True)
 class AppContext:
@@ -39,7 +41,7 @@ CONTEXT_PREAMBLE = (
 )
 
 
-def detect_app_context(timeout: float = 0.5) -> AppContext:
+def detect_app_context(timeout: float = constants.APP_CONTEXT_PROBE_TIMEOUT_SECONDS) -> AppContext:
     """Return the focused-window class/title, or empty on any failure.
 
     Returns AppContext(None, None) when not running under Hyprland, when
@@ -87,15 +89,10 @@ def format_context_block(ctx: AppContext, max_title_chars: int = 200) -> str:
     title = ctx.window_title or ""
     if len(title) > max_title_chars:
         title = title[:max_title_chars] + "..."
-    return (
-        CONTEXT_PREAMBLE
-        + f"Application: `{app}` Window: `{title}`"
-    )
+    return CONTEXT_PREAMBLE + f"Application: `{app}` Window: `{title}`"
 
 
-def select_app_style(
-    ctx: AppContext, apps_config: dict | None
-) -> str | None:
+def select_app_style(ctx: AppContext, apps_config: dict | None) -> str | None:
     """Pick the per-app `style` override for the focused app, if any.
 
     Matches on the Hyprland `class` string exactly. `apps_config` is

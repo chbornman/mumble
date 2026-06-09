@@ -8,12 +8,15 @@ All settings are driven by config.toml — no magic numbers.
 """
 
 import argparse
+import json
 import logging
 import os
 import queue
 import re
+import select
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -30,8 +33,10 @@ from app_context import (
     format_context_block,
     select_app_style,
 )
+import constants
 from clipboard_paste import paste_via_clipboard
 from config_loader import Config, load_config
+from text_injector import resolve_injector
 from glossary import Glossary, format_whisper_prompt, load_glossary
 from llm_postprocess import LLMPostProcessor
 from modes import available_modes, resolve_mode_block, resolve_mode_for_app
@@ -238,6 +243,10 @@ class WhisperDaemon:
                 f"(model={config.llm_postprocess.model})"
             )
 
+        # Pluggable text injector (wtype/ydotool/xdotool/raw), resolved once
+        # from wayland.typer. See text_injector.py.
+        self.injector = resolve_injector(config.wayland.typer, self.logger)
+
         # State
         self.recording = False
         self.interrupted = False
@@ -260,6 +269,25 @@ class WhisperDaemon:
         # MPRIS players paused on dictation start; resumed on stop. Tracked
         # per-player so already-paused media doesn't get woken up on stop.
         self._paused_players: list[str] = []
+
+        # Streaming session state (daemon-owned, parallels recording state).
+        # `streaming` is the single source of truth for "a stream is live".
+        # `stream_thread` runs the sidecar reader loop (nemotron path) and is
+        # gated by `stream_stop`; `stream_socket` is the client connection to
+        # the mumble-stt sidecar; `legacy_stream_proc` holds the whisper-stream
+        # | stream_dedup.py subprocess when the legacy backend is selected (or
+        # fallen back to).
+        self.streaming = False
+        self.stream_thread: threading.Thread | None = None
+        self.stream_stop = threading.Event()
+        self.stream_socket: socket.socket | None = None
+        # inject_mode="live": the text currently typed for the in-progress
+        # utterance, so the reader loop can backspace+retype the revised tail.
+        self._live_typed = ""
+        self.legacy_stream_proc: subprocess.Popen | None = None
+        # The stream_dedup.py stage of the legacy pipeline (downstream of
+        # legacy_stream_proc); reaped alongside it in teardown.
+        self._legacy_dedup_proc: subprocess.Popen | None = None
 
         # Server mode from config
         self.server_mode = config.daemon.mode == "server"
@@ -307,13 +335,23 @@ class WhisperDaemon:
         """Handle shutdown signals."""
         self.logger.info("Received shutdown signal")
         self.interrupted = True
+        # Tear down any live streaming session so the reader thread, sidecar
+        # socket, and legacy subprocess (incl. an autostarted multi-GB sidecar)
+        # don't leak on shutdown.
+        if self.streaming:
+            try:
+                self.stop_streaming()
+            except Exception as e:
+                self.logger.warning(f"Error stopping streaming on shutdown: {e}")
         if self.server_socket:
             self.server_socket.close()
         if self.whisper_server_process:
             self.logger.info("Stopping whisper server...")
             self.whisper_server_process.terminate()
             try:
-                self.whisper_server_process.wait(timeout=5)
+                self.whisper_server_process.wait(
+                    timeout=constants.WHISPER_SERVER_TERMINATE_TIMEOUT_SECONDS
+                )
             except subprocess.TimeoutExpired:
                 self.whisper_server_process.kill()
         sys.exit(0)
@@ -359,7 +397,7 @@ class WhisperDaemon:
                     "-t",
                     timeout_ms,
                 ],
-                timeout=1,
+                timeout=constants.NOTIFY_SEND_TIMEOUT_SECONDS,
             )
         except Exception as e:
             self.logger.warning(f"Could not show notification: {e}")
@@ -378,7 +416,7 @@ class WhisperDaemon:
                 ["playerctl", "-l"],
                 capture_output=True,
                 text=True,
-                timeout=1,
+                timeout=constants.PLAYERCTL_TIMEOUT_SECONDS,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             self.logger.debug(f"playerctl unavailable, skipping media pause: {e}")
@@ -391,11 +429,12 @@ class WhisperDaemon:
                     ["playerctl", "-p", player, "status"],
                     capture_output=True,
                     text=True,
-                    timeout=1,
+                    timeout=constants.PLAYERCTL_TIMEOUT_SECONDS,
                 )
                 if status.returncode == 0 and status.stdout.strip() == "Playing":
                     subprocess.run(
-                        ["playerctl", "-p", player, "pause"], timeout=1
+                        ["playerctl", "-p", player, "pause"],
+                        timeout=constants.PLAYERCTL_TIMEOUT_SECONDS,
                     )
                     self._paused_players.append(player)
             except subprocess.TimeoutExpired as e:
@@ -405,7 +444,10 @@ class WhisperDaemon:
         """Resume players that `_pause_media_players` paused on dictation start."""
         for player in self._paused_players:
             try:
-                subprocess.run(["playerctl", "-p", player, "play"], timeout=1)
+                subprocess.run(
+                    ["playerctl", "-p", player, "play"],
+                    timeout=constants.PLAYERCTL_TIMEOUT_SECONDS,
+                )
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                 self.logger.debug(f"playerctl resume failed for {player}: {e}")
         self._paused_players = []
@@ -423,6 +465,12 @@ class WhisperDaemon:
         if self.recording:
             self.logger.warning("Already recording")
             return "ALREADY_RECORDING"
+
+        # Press-to-talk and streaming share the mic and the _type_text injector,
+        # so they must never run concurrently. Stop any live stream first.
+        if self.streaming:
+            self.logger.info("Stopping active stream before recording")
+            self.stop_streaming()
 
         if command_mode:
             if not self.config.llm_postprocess.command_mode.enabled:
@@ -474,19 +522,535 @@ class WhisperDaemon:
         self.logger.info("Recording stopped")
         return "STOPPED"
 
+    # ------------------------------------------------------------------
+    # Streaming lifecycle (daemon-owned). Parallels the recording lifecycle:
+    # one session at a time, gated by self.streaming, with a reader thread
+    # (self.stream_thread) playing the role _record_audio plays for
+    # press-to-talk. Config-gated by backend.streaming_backend.
+    # ------------------------------------------------------------------
+
+    # mumble-stt sidecar wire protocol (length-prefixed binary framing).
+    # Every frame: TYPE(uint8) + LEN(uint32 big-endian) + PAYLOAD(LEN bytes).
+    # JSON payloads are single-line UTF-8.
+    _ST_HELLO = 0x01  # JSON  daemon->sidecar  session open + params
+    _ST_AUDIO = 0x02  # bytes daemon->sidecar  raw s16le mono 16k PCM chunk
+    _ST_FLUSH = 0x03  # JSON  daemon->sidecar  utterance boundary
+    _ST_BYE = 0x04  # JSON  daemon->sidecar  end session
+    _ST_READY = 0x10  # JSON  sidecar->daemon  model loaded, ready for audio
+    _ST_PARTIAL = 0x11  # JSON sidecar->daemon  in-progress hypothesis
+    _ST_FINAL = 0x12  # JSON  sidecar->daemon  finalized utterance text
+    _ST_ERROR = 0x13  # JSON  sidecar->daemon  recoverable/fatal error
+
+    def toggle_streaming(self) -> str:
+        """Toggle the streaming session on/off (idempotent)."""
+        if self.streaming:
+            return self.stop_streaming()
+        return self.start_streaming()
+
+    def start_streaming(self) -> str:
+        """Start a streaming session via the configured streaming backend.
+
+        Refuses while a press-to-talk recording is active (they share the mic
+        and injector). Branches on backend.streaming_backend; on a nemotron
+        start failure, falls back to the legacy whisper-stream pipeline when
+        nemotron.legacy_fallback is set.
+        """
+        if self.recording:
+            self.logger.warning("Cannot start streaming while recording")
+            return "BUSY_RECORDING"
+        if self.streaming:
+            self.logger.warning("Already streaming")
+            return "ALREADY_STREAMING"
+
+        backend = self.config.backend.streaming_backend
+        self.stream_stop.clear()
+        self._live_typed = ""
+
+        started = False
+        if backend == "nemotron-streaming":
+            try:
+                self._start_nemotron_stream()
+                started = True
+            except Exception as e:
+                self.logger.error(f"Nemotron streaming start failed: {e}")
+                self._teardown_stream_resources()
+                if self.config.nemotron.legacy_fallback:
+                    self.logger.info("Falling back to legacy whisper-stream pipeline")
+                    try:
+                        self._start_legacy_stream()
+                        started = True
+                    except Exception as e2:
+                        self.logger.error(f"Legacy stream fallback failed: {e2}")
+                        return "STREAM_START_FAILED"
+                else:
+                    return "STREAM_START_FAILED"
+        elif backend == "whisper-stream":
+            try:
+                self._start_legacy_stream()
+                started = True
+            except Exception as e:
+                self.logger.error(f"Legacy streaming start failed: {e}")
+                return "STREAM_START_FAILED"
+        else:
+            self.logger.error(f"Unknown streaming_backend '{backend}'")
+            return "UNKNOWN_STREAMING_BACKEND"
+
+        if not started:
+            return "STREAM_START_FAILED"
+
+        self.streaming = True
+        Path(self.config.daemon.streaming_flag).touch()
+        self._pause_media_players()
+        self._play_sound(self.start_sound)
+        self._notify("Streaming started")
+        self.logger.info(f"Streaming started (backend={backend})")
+        return "STREAMING"
+
+    def stop_streaming(self) -> str:
+        """Stop the streaming session and tear down all owned resources."""
+        if not self.streaming:
+            self.logger.warning("Not streaming")
+            return "NOT_STREAMING"
+
+        # Mark user-initiated stop first so the reader loop, on socket close,
+        # knows not to clear state itself (we own the teardown here).
+        self.stream_stop.set()
+
+        # Best-effort graceful end of the sidecar session: FLUSH the trailing
+        # utterance, wait briefly for the matching FINAL the reader thread will
+        # inject, then BYE. Wrapped — a dead sidecar must not block stop.
+        sock = self.stream_socket
+        if sock is not None:
+            try:
+                self._send_frame(sock, self._ST_FLUSH, b"{}")
+                time.sleep(constants.STREAM_STOP_SETTLE_SECONDS)
+                self._send_frame(sock, self._ST_BYE, b"{}")
+            except OSError as e:
+                self.logger.debug(f"Sidecar BYE/FLUSH failed (already gone?): {e}")
+
+        self._teardown_stream_resources()
+
+        Path(self.config.daemon.streaming_flag).unlink(missing_ok=True)
+        self._play_sound(self.stop_sound)
+        self._resume_media_players()
+        self._notify("Streaming stopped")
+
+        self.streaming = False
+        self.logger.info("Streaming stopped")
+        return "STREAM_STOPPED"
+
+    def _teardown_stream_resources(self):
+        """Close the sidecar socket, join the reader thread, kill the legacy
+        subprocess. Safe to call multiple times; does NOT touch the
+        streaming_flag / media / sounds (callers handle user-visible state)."""
+        if self.stream_socket is not None:
+            try:
+                self.stream_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.stream_socket.close()
+            except OSError:
+                pass
+            self.stream_socket = None
+
+        if self.stream_thread is not None:
+            # Don't join ourselves (reader loop may call into reset on socket
+            # close); only join from a different thread.
+            if self.stream_thread is not threading.current_thread():
+                self.stream_thread.join(timeout=constants.STREAM_THREAD_JOIN_TIMEOUT_SECONDS)
+            self.stream_thread = None
+
+        if self.legacy_stream_proc is not None:
+            proc = self.legacy_stream_proc
+            self.legacy_stream_proc = None
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=constants.STREAM_PROC_WAIT_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception as e:
+                self.logger.debug(f"Error terminating legacy stream proc: {e}")
+
+        if self._legacy_dedup_proc is not None:
+            proc = self._legacy_dedup_proc
+            self._legacy_dedup_proc = None
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=constants.STREAM_PROC_WAIT_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception as e:
+                self.logger.debug(f"Error terminating dedup proc: {e}")
+
+    def _send_frame(self, sock: socket.socket, frame_type: int, payload: bytes):
+        """Send one length-prefixed frame to the sidecar."""
+        header = struct.pack(">BI", frame_type, len(payload))
+        sock.sendall(header + payload)
+
+    def _start_nemotron_stream(self):
+        """Connect to the mumble-stt sidecar, complete the HELLO/READY
+        handshake, start the mic capture + audio-send, and spawn the reader
+        thread. Raises on any failure so start_streaming can fall back."""
+        cfg = self.config.nemotron
+        socket_path = cfg.socket_path
+
+        # Optionally spawn the sidecar if it isn't listening yet.
+        if cfg.sidecar_autostart and not os.path.exists(socket_path):
+            if not cfg.sidecar_cmd:
+                raise RuntimeError(
+                    "sidecar_autostart is true but nemotron.sidecar_cmd is empty"
+                )
+            self.logger.info(f"Autostarting sidecar: {cfg.sidecar_cmd}")
+            # Track under legacy_stream_proc so teardown reaps it too.
+            self.legacy_stream_proc = subprocess.Popen(
+                cfg.sidecar_cmd, shell=True
+            )
+
+        # Connect loop bounded by connect_timeout (the socket may appear a
+        # moment after the sidecar process starts).
+        deadline = time.time() + cfg.connect_timeout
+        sock = None
+        last_err: Exception | None = None
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(socket_path)
+                sock = s
+                break
+            except OSError as e:
+                last_err = e
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                time.sleep(constants.STREAM_CONNECT_RETRY_SECONDS)
+        if sock is None:
+            raise RuntimeError(
+                f"Could not connect to sidecar at {socket_path}: {last_err}"
+            )
+
+        self.stream_socket = sock
+
+        # HELLO with the audio params (must match our capture: s16le mono 16k).
+        hello = {
+            "v": 1,
+            "sample_rate": self.config.audio.sample_rate,
+            "encoding": "s16le",
+            "channels": self.config.audio.channels,
+            "want_partials": cfg.inject_mode == "live",
+            "session_id": str(int(time.time() * 1000)),
+        }
+        self._send_frame(sock, self._ST_HELLO, json.dumps(hello).encode("utf-8"))
+
+        # Wait for READY (or ERROR) within connect_timeout. Frames are
+        # length-prefixed; reuse the blocking frame reader with the deadline.
+        sock.settimeout(
+            max(cfg.connect_timeout, constants.STREAM_HANDSHAKE_MIN_TIMEOUT_SECONDS)
+        )
+        frame_type, payload = self._recv_frame(sock)
+        if frame_type == self._ST_ERROR:
+            self._teardown_stream_resources()
+            raise RuntimeError(f"Sidecar ERROR on HELLO: {payload!r}")
+        if frame_type != self._ST_READY:
+            self._teardown_stream_resources()
+            raise RuntimeError(f"Expected READY, got frame type {frame_type:#x}")
+        self.logger.info(f"Sidecar READY: {payload!r}")
+        sock.settimeout(None)
+
+        # Spawn the reader thread (sidecar->daemon: PARTIAL/FINAL/ERROR) and
+        # the audio capture thread (daemon->sidecar: AUDIO frames). Both exit
+        # when stream_stop is set or the socket closes.
+        self.stream_thread = threading.Thread(
+            target=self._nemotron_reader_loop, args=(sock,), daemon=True
+        )
+        self.stream_thread.start()
+        threading.Thread(
+            target=self._nemotron_audio_loop, args=(sock,), daemon=True
+        ).start()
+
+    def _recv_frame(self, sock: socket.socket):
+        """Blocking read of one length-prefixed frame. Returns (type, payload)
+        or (None, b"") if the socket closed cleanly."""
+        header = self._recv_exact(sock, 5)
+        if header is None:
+            return None, b""
+        frame_type, length = struct.unpack(">BI", header)
+        payload = self._recv_exact(sock, length) if length else b""
+        if payload is None:
+            return None, b""
+        return frame_type, payload
+
+    @staticmethod
+    def _recv_exact(sock: socket.socket, n: int):
+        """Read exactly n bytes; return None if the peer closed first."""
+        chunks = []
+        remaining = n
+        while remaining > 0:
+            chunk = sock.recv(remaining)
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _nemotron_audio_loop(self, sock: socket.socket):
+        """Capture mic audio and stream it to the sidecar as AUDIO frames.
+
+        Mirrors _record_audio's capture (s16le mono 16k via sounddevice) but
+        pushes ~100ms chunks to the sidecar instead of buffering. Exits when
+        stream_stop is set or the socket dies."""
+        sample_rate = self.config.audio.sample_rate
+        channels = self.config.audio.channels
+        audio_q: queue.Queue = queue.Queue()
+
+        def audio_callback(indata, frames, time_info, status):
+            if status:
+                self.logger.warning(f"Stream audio callback status: {status}")
+            if not self.stream_stop.is_set():
+                audio_q.put(indata.copy())
+
+        try:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=channels,
+                callback=audio_callback,
+                dtype="int16",
+                blocksize=int(sample_rate * constants.STREAM_AUDIO_CHUNK_SECONDS),
+            ):
+                while not self.stream_stop.is_set():
+                    try:
+                        chunk = audio_q.get(timeout=constants.STREAM_AUDIO_QUEUE_TIMEOUT_SECONDS)
+                    except queue.Empty:
+                        continue
+                    try:
+                        self._send_frame(sock, self._ST_AUDIO, chunk.tobytes())
+                    except OSError as e:
+                        self.logger.debug(f"Audio send stopped (socket gone): {e}")
+                        break
+        except Exception as e:
+            self.logger.error(f"Streaming audio capture error: {e}")
+
+    def _nemotron_reader_loop(self, sock: socket.socket):
+        """Read sidecar->daemon frames; inject FINALs (and PARTIALs if enabled).
+
+        Exits when stream_stop is set or the socket closes (recv -> b""). If the
+        socket dies WITHOUT a user-initiated stop (stream_stop unset), the
+        sidecar crashed mid-session — clear the streaming_flag and reset state
+        so waybar / STATUS don't get stuck on STREAMING."""
+        try:
+            while not self.stream_stop.is_set():
+                try:
+                    frame_type, payload = self._recv_frame(sock)
+                except OSError:
+                    break
+                if frame_type is None:
+                    # Socket closed by sidecar.
+                    break
+
+                live = self.config.nemotron.inject_mode == "live"
+
+                # In live mode, drain every frame already buffered on the socket
+                # and process them as one batch: partials COALESCE (only the
+                # newest is rendered) so a burst of revisions costs one
+                # backspace+retype instead of one per partial; finals commit
+                # immediately and supersede any pending partial. This is what
+                # keeps the on-screen rewrite snappy during fast speech.
+                batch = [(frame_type, payload)]
+                if live:
+                    while True:
+                        readable, _, _ = select.select([sock], [], [], 0)
+                        if not readable:
+                            break
+                        try:
+                            ft, pl = self._recv_frame(sock)
+                        except OSError:
+                            ft = None
+                        if ft is None:
+                            break
+                        batch.append((ft, pl))
+
+                pending_partial = None
+                stop = False
+                for ft, pl in batch:
+                    if ft == self._ST_FINAL:
+                        text = self._parse_segment_text(pl)
+                        if text is not None:
+                            pending_partial = None
+                            if live:
+                                self._live_commit_final(text)
+                            else:
+                                self._inject_stream_final(text)
+                    elif ft == self._ST_PARTIAL:
+                        if live:
+                            text = self._parse_segment_text(pl)
+                            if text is not None:
+                                pending_partial = text  # coalesce to latest
+                    elif ft == self._ST_ERROR:
+                        self.logger.warning(f"Sidecar ERROR frame: {pl!r}")
+                        try:
+                            info = json.loads(pl.decode("utf-8"))
+                            if info.get("fatal"):
+                                stop = True
+                        except (ValueError, UnicodeDecodeError):
+                            pass
+                    # READY/HELLO etc. mid-session are ignored.
+
+                if pending_partial is not None:
+                    self._live_update(pending_partial)
+                if stop:
+                    break
+        finally:
+            if not self.stream_stop.is_set():
+                # Unexpected sidecar death: reset so the indicator isn't stuck.
+                self.logger.warning("Sidecar connection closed unexpectedly")
+                Path(self.config.daemon.streaming_flag).unlink(missing_ok=True)
+                self.streaming = False
+                self.stream_stop.set()
+                self.stream_socket = None
+                try:
+                    self._resume_media_players()
+                except Exception:
+                    pass
+
+    def _parse_segment_text(self, payload: bytes) -> str | None:
+        """Extract transcript text from a sidecar JSON segment payload.
+
+        Accepts the protocol JSON form {"type":...,"text":...}; tolerates a
+        bare string payload as a fallback. Returns None on parse failure."""
+        try:
+            obj = json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if isinstance(obj, dict):
+            return obj.get("text", "")
+        if isinstance(obj, str):
+            return obj
+        return None
+
+    def _inject_stream_final(self, text: str):
+        """Inject a FINAL segment. Nemotron emits clean, non-overlapping,
+        punctuated+capitalized finals, so no dedup is needed — just strip,
+        skip empties, clean artifacts, and append via the shared _type_text
+        path (which handles wtype vs clipboard-paste)."""
+        if not text:
+            return
+        cleaned = self.config.transcription.clean_text(text).strip()
+        if not cleaned:
+            return
+        self.logger.info(f"Stream FINAL: {cleaned[:60]}")
+        self._type_text(cleaned + " ")
+
+    def _live_update(self, target: str):
+        """Make the on-screen in-progress text equal `target` (inject_mode=live).
+
+        Diffs `target` against what we've already typed for this utterance,
+        backspaces the divergent tail, and types the new tail — so a revised
+        partial corrects in place instead of duplicating. Cheap when the partial
+        only grows (no backspaces, just the new suffix)."""
+        current = self._live_typed
+        common = 0
+        limit = min(len(current), len(target))
+        while common < limit and current[common] == target[common]:
+            common += 1
+        # One batched keystroke op: backspace the divergent tail + type the new
+        # suffix (no-op when the partial only grew and common == len(current)).
+        self.injector.edit(len(current) - common, target[common:])
+        self._live_typed = target
+
+    def _live_commit_final(self, text: str):
+        """Reconcile the in-progress partial to the FINAL, commit a separator,
+        and reset for the next utterance (inject_mode=live)."""
+        cleaned = self.config.transcription.clean_text(text).strip()
+        # Reconcile whatever partial is on screen to the final text (this also
+        # erases a partial that the model decided was noise: final == "").
+        self._live_update(cleaned)
+        if cleaned:
+            self.logger.info(f"Stream FINAL: {cleaned[:60]}")
+            self.injector.type_text(constants.LIVE_FINAL_SEPARATOR)
+        self._live_typed = ""
+
+    def _start_legacy_stream(self):
+        """Spawn the legacy whisper-stream | stream_dedup.py pipeline as a
+        daemon-owned subprocess (the command toggle_stream.sh used to build).
+        Config-derived to avoid drift. Stored in self.legacy_stream_proc."""
+        whisper_stream = str(self.config.whisper_stream_path)
+        if not Path(whisper_stream).exists():
+            raise RuntimeError(f"whisper-stream not found at {whisper_stream}")
+
+        scfg = self.config.streaming
+        cmd = [
+            whisper_stream,
+            "-m",
+            str(self.config.model_path),
+            "-l",
+            self.config.model.language,
+            "--step",
+            str(scfg.step),
+            "--length",
+            str(scfg.buffer_length),
+            "--keep",
+            str(scfg.keep),
+            "-vth",
+            str(scfg.vad_threshold),
+            "-t",
+            str(scfg.threads),
+        ]
+        if self.config.backend.type == "cpu":
+            cmd.append("--no-gpu")
+        else:
+            cmd.extend(["--device", str(self.config.backend.vulkan.device)])
+
+        dedup_script = str(self.config.paths.project_dir / "stream_dedup.py")
+        venv_python = str(self.config.paths.project_dir / ".venv" / "bin" / "python")
+
+        stream_log = open(scfg.debug.stream_log, "w")
+        self.logger.info(f"Legacy stream command: {' '.join(cmd)}")
+
+        # whisper-stream stdout -> stream_dedup.py stdin. Run the dedup stage in
+        # the same process group via a shell pipe so one terminate cleans up
+        # both. Mirror env (Wayland) so stream_dedup's wtype works.
+        whisper_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=stream_log,
+        )
+        dedup_proc = subprocess.Popen(
+            [venv_python, dedup_script],
+            stdin=whisper_proc.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Allow whisper_proc to receive SIGPIPE if dedup dies.
+        if whisper_proc.stdout:
+            whisper_proc.stdout.close()
+
+        # We track the head process; terminate() on it stops capture, and the
+        # dedup stage exits on the resulting EOF. Keep a reference to the dedup
+        # proc so it's reaped too.
+        self.legacy_stream_proc = whisper_proc
+        self._legacy_dedup_proc = dedup_proc
+
     def _record_audio(self):
         """Record audio in background thread."""
         self.logger.info("Recording thread started")
         recorded_chunks = []
+        frames_recorded = 0
 
         def audio_callback(indata, frames, time_info, status):
+            nonlocal frames_recorded
             if status:
                 self.logger.warning(f"Audio callback status: {status}")
             if self.recording:
                 recorded_chunks.append(indata.copy())
+                frames_recorded += frames
 
         sample_rate = self.config.audio.sample_rate
         channels = self.config.audio.channels
+        max_seconds = self.config.audio.max_recording_seconds
+        max_frames = int(max_seconds * sample_rate) if max_seconds > 0 else 0
 
         with sd.InputStream(
             samplerate=sample_rate,
@@ -495,7 +1059,22 @@ class WhisperDaemon:
             dtype="int16",
         ):
             while self.recording:
-                sd.sleep(100)
+                sd.sleep(constants.RECORDING_POLL_MS)
+                # Hard cap on recording length. Without this, a stuck recording
+                # flag (missed toggle / dropped IPC) grows recorded_chunks
+                # without bound until the kernel OOM-kills the daemon. Auto-stop
+                # and transcribe whatever we captured.
+                if max_frames and frames_recorded >= max_frames:
+                    self.logger.warning(
+                        f"Recording hit {max_seconds}s cap; auto-stopping"
+                    )
+                    self.recording = False
+                    Path(self.config.daemon.recording_flag).unlink(missing_ok=True)
+                    self._resume_media_players()
+                    self._notify(
+                        f"Recording hit {max_seconds}s limit - transcribing...",
+                        urgency="critical",
+                    )
 
         if recorded_chunks:
             audio_data = np.concatenate(recorded_chunks, axis=0)
@@ -538,14 +1117,12 @@ class WhisperDaemon:
         )
         paste_via_clipboard(
             outcome.cleaned,
-            typer=self.config.wayland.typer,
+            injector=self.injector,
             wl_copy=self.config.wayland.wl_copy,
             wl_paste=self.config.wayland.wl_paste,
             logger=self.logger,
         )
-        self._notify(
-            f"Command applied: {outcome.cleaned[:40]}...", urgency="low"
-        )
+        self._notify(f"Command applied: {outcome.cleaned[:40]}...", urgency="low")
 
     def _capture_selection(self) -> str:
         """Read the current selection for command mode.
@@ -560,7 +1137,10 @@ class WhisperDaemon:
             cmd.append("-p")
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=1
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=constants.SELECTION_CAPTURE_TIMEOUT_SECONDS,
             )
             if result.returncode == 0:
                 return result.stdout
@@ -610,21 +1190,20 @@ class WhisperDaemon:
                 if self.config.llm_postprocess.app_context.enabled:
                     ctx = detect_app_context()
                     app_class = ctx.app_class
-                    context_block = format_context_block(
-                        ctx,
-                        max_title_chars=self.config.llm_postprocess.app_context.max_title_chars,
-                    ) or None
-                    style_hint = select_app_style(
-                        ctx, self.config.llm_postprocess.apps
+                    context_block = (
+                        format_context_block(
+                            ctx,
+                            max_title_chars=self.config.llm_postprocess.app_context.max_title_chars,
+                        )
+                        or None
                     )
+                    style_hint = select_app_style(ctx, self.config.llm_postprocess.apps)
 
                 # Mode precedence: explicit per-turn > session default > per-app default.
                 chosen_mode = (
                     self.active_mode
                     or self.default_mode
-                    or resolve_mode_for_app(
-                        app_class, self.config.llm_postprocess.apps
-                    )
+                    or resolve_mode_for_app(app_class, self.config.llm_postprocess.apps)
                 )
                 mode_block = resolve_mode_block(chosen_mode)
                 if chosen_mode and mode_block is None:
@@ -773,7 +1352,6 @@ class WhisperDaemon:
         drops keystrokes on long inputs. Threshold 0 keeps the legacy
         behavior (always use the typer).
         """
-        typer = self.config.wayland.typer
         threshold = self.config.wayland.clipboard_paste_threshold
         if threshold > 0 and len(text) > threshold:
             self.logger.info(
@@ -782,25 +1360,20 @@ class WhisperDaemon:
             )
             paste_via_clipboard(
                 text,
-                typer=typer,
+                injector=self.injector,
                 wl_copy=self.config.wayland.wl_copy,
                 wl_paste=self.config.wayland.wl_paste,
                 logger=self.logger,
             )
             return
-        try:
-            subprocess.run([typer, "-"], input=text, text=True, check=True, timeout=5)
-            self.logger.info("Text typed successfully")
-        except FileNotFoundError:
-            self.logger.error(f"{typer} not found - install it for auto-typing")
-        except Exception as e:
-            self.logger.error(f"Typing error: {e}")
+        self.injector.type_text(text)
 
     def handle_command(self, command: str) -> str:
         """Handle IPC command.
 
         Wire format (backward compatible):
-          START | STOP | STATUS | TOGGLE
+          START | STOP | STATUS | TOGGLE | STREAM
+          STREAM                    (parameterless toggle of live streaming)
           START mode=commit         (per-turn preset override)
           TOGGLE mode=email
           SET_MODE commit           (sets the session default)
@@ -827,7 +1400,12 @@ class WhisperDaemon:
             return self.start_recording(command_mode=True)
         if verb == "STOP":
             return self.stop_recording()
+        if verb == "STREAM":
+            # Parameterless toggle (mirrors the old toggle_stream.sh keybind).
+            return self.toggle_streaming()
         if verb == "STATUS":
+            if self.streaming:
+                return "STREAMING"
             base = "RECORDING" if self.recording else "READY"
             if self.default_mode:
                 base = f"{base} mode={self.default_mode}"
@@ -850,7 +1428,7 @@ class WhisperDaemon:
     def _handle_client(self, client_socket: socket.socket):
         """Handle client connection."""
         try:
-            data = client_socket.recv(1024).decode()
+            data = client_socket.recv(constants.IPC_RECV_BUFFER_BYTES).decode()
             response = self.handle_command(data)
             client_socket.send(response.encode())
         except Exception as e:
@@ -917,7 +1495,10 @@ class WhisperDaemon:
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                response = requests.get(f"http://127.0.0.1:{port}/", timeout=1)
+                response = requests.get(
+                    f"http://127.0.0.1:{port}/",
+                    timeout=constants.WHISPER_SERVER_HEALTH_TIMEOUT_SECONDS,
+                )
                 if response.status_code in [200, 404]:
                     self.logger.info("Whisper server started successfully")
                     return

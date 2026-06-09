@@ -1,0 +1,15 @@
+# Heavy ASR sidecar dependencies — installed into a DEDICATED venv (.venv-stt),
+# never into mumble's light .venv (NeMo + torch are multi-GB and pull a large
+# dependency tree; keeping them separate keeps the daemon venv fast and small).
+#
+# Setup (from the repo root):
+#   python -m venv .venv-stt           # or: uv venv .venv-stt
+#   .venv-stt/bin/pip install -r mumble_stt/requirements.txt
+#
+# Requires an NVIDIA GPU + driver new enough for CUDA 12.8 wheels.
+# If you need a different CUDA series, change the index URL below to match
+# (see https://pytorch.org/get-started/locally/).
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.9.1
+nemo_toolkit[asr]==2.7.3

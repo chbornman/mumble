@@ -1,5 +1,5 @@
 [Unit]
-Description=mumble - whisper.cpp dictation daemon
+Description=mumble - local voice dictation daemon
 After=sound.target
 
 [Service]
@@ -8,6 +8,10 @@ WorkingDirectory=%h/projects/mumble
 ExecStart=%h/projects/mumble/.venv/bin/python %h/projects/mumble/whisper_daemon.py --config %h/projects/mumble/config.toml
 Restart=always
 RestartSec=5
+# Backstop against runaway memory (e.g. a stuck recording flag growing the
+# capture buffer unboundedly). The in-daemon cap is audio.max_recording_seconds;
+# this is the hard ceiling behind it.
+MemoryMax=6G
 
 # Wayland environment
 Environment=WAYLAND_DISPLAY=wayland-1

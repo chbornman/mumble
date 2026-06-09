@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import constants
 from config_loader import load_config
 from whisper_daemon import StreamDeduplicator
 from word_dedup import WordLevelDeduplicator
@@ -57,7 +58,7 @@ def type_text(text: str) -> bool:
     try:
         result = subprocess.run(
             [typer, text + " "],
-            timeout=5,
+            timeout=constants.STREAM_TYPER_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )

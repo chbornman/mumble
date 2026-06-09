@@ -20,6 +20,17 @@ def _expand_path(path_str: str, base_dir: Optional[Path] = None) -> Path:
     return p
 
 
+def _resolve_runtime_socket(raw_value: str) -> str:
+    """Resolve a unix-socket path, expanding the systemd %t / $XDG_RUNTIME_DIR
+    convention. Kept byte-for-byte compatible with the sidecar's resolver
+    (mumble_stt/config.py:_resolve_socket_path) so the daemon connects to
+    exactly where the sidecar binds. Falls back to /run/user/<uid> when
+    XDG_RUNTIME_DIR is unset (e.g. a bare shell launch)."""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    value = raw_value.replace("%t", runtime_dir)
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 @dataclass
 class PathsConfig:
     whisper_cpp_dir: Path
@@ -58,6 +69,10 @@ class VulkanConfig:
 @dataclass
 class BackendConfig:
     type: str  # "cpu" or "vulkan"
+    # Streaming engine: "whisper-stream" (legacy whisper.cpp pipeline) or
+    # "nemotron-streaming" (daemon-owned mumble-stt sidecar client). Separate
+    # from `type`, which selects the batch press-to-talk backend.
+    streaming_backend: str
     threads: int
     max_threads: int
     processors: int
@@ -77,6 +92,10 @@ class AudioConfig:
     sample_rate: int
     channels: int
     sound_sample_rate: int
+    # Hard cap on a single recording's length (seconds). Bounds the in-memory
+    # capture buffer so a stuck recording flag (missed toggle / dropped IPC)
+    # can't grow unbounded and OOM-kill the daemon. 0 disables the cap.
+    max_recording_seconds: int
 
 
 @dataclass
@@ -85,7 +104,6 @@ class DaemonConfig:
     socket_path: str
     recording_flag: str
     streaming_flag: str
-    stream_pid_file: str
     log_file: str
     notifications: bool
     server_port: int
@@ -139,6 +157,21 @@ class StreamingConfig:
     word_overlap_lookback: int
     immediate_repeat_window: int
     max_committed_words: int
+
+
+@dataclass
+class NemotronConfig:
+    # Settings for the "nemotron-streaming" streaming backend (the mumble-stt
+    # sidecar client). Only consumed when backend.streaming_backend =
+    # "nemotron-streaming".
+    socket_path: str
+    sidecar_autostart: bool
+    sidecar_cmd: str
+    connect_timeout: float
+    # "finals" = inject committed FINAL segments only (clean, phrase-by-phrase).
+    # "live"   = type the growing PARTIAL live, backspacing to correct revisions.
+    inject_mode: str
+    legacy_fallback: bool
 
 
 @dataclass
@@ -220,6 +253,7 @@ class Config:
     daemon: DaemonConfig
     transcription: TranscriptionConfig
     streaming: StreamingConfig
+    nemotron: NemotronConfig
     wayland: WaylandConfig
     waybar: WaybarConfig
     build: BuildConfig
@@ -258,7 +292,7 @@ def _find_config_file(explicit_path: Optional[str] = None) -> Path:
     candidates = [
         Path.cwd() / "config.toml",
         Path(__file__).parent / "config.toml",
-        Path.home() / ".config" / "whisper-daemon" / "config.toml",
+        Path.home() / ".config" / "mumble" / "config.toml",
     ]
 
     for c in candidates:
@@ -348,6 +382,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     backend = BackendConfig(
         type=backend_raw["type"],
+        streaming_backend=backend_raw.get("streaming_backend", "whisper-stream"),
         threads=backend_raw.get("threads", 0),
         max_threads=backend_raw.get("max_threads", 12),
         processors=backend_raw.get("processors", 1),
@@ -362,6 +397,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         sample_rate=audio_raw["sample_rate"],
         channels=audio_raw["channels"],
         sound_sample_rate=audio_raw["sound_sample_rate"],
+        max_recording_seconds=audio_raw.get("max_recording_seconds", 1200),
     )
 
     # Daemon
@@ -371,7 +407,6 @@ def load_config(config_path: Optional[str] = None) -> Config:
         socket_path=daemon_raw["socket_path"],
         recording_flag=daemon_raw["recording_flag"],
         streaming_flag=daemon_raw["streaming_flag"],
-        stream_pid_file=daemon_raw["stream_pid_file"],
         log_file=daemon_raw["log_file"],
         notifications=daemon_raw["notifications"],
         server_port=daemon_raw["server_port"],
@@ -417,6 +452,22 @@ def load_config(config_path: Optional[str] = None) -> Config:
         word_overlap_lookback=stream_raw.get("word_overlap_lookback", 15),
         immediate_repeat_window=stream_raw.get("immediate_repeat_window", 8),
         max_committed_words=stream_raw.get("max_committed_words", 200),
+    )
+
+    # Nemotron streaming sidecar (only used when
+    # backend.streaming_backend = "nemotron-streaming"). Defaulting via .get()
+    # keeps older config.toml / config.local.toml files (without a [nemotron]
+    # table) loading unchanged.
+    nem_raw = raw.get("nemotron", {})
+    nemotron = NemotronConfig(
+        socket_path=_resolve_runtime_socket(
+            nem_raw.get("socket_path", "%t/mumble-stt.sock")
+        ),
+        sidecar_autostart=nem_raw.get("sidecar_autostart", False),
+        sidecar_cmd=nem_raw.get("sidecar_cmd", ""),
+        connect_timeout=nem_raw.get("connect_timeout", 5.0),
+        inject_mode=nem_raw.get("inject_mode", "finals"),
+        legacy_fallback=nem_raw.get("legacy_fallback", True),
     )
 
     # Wayland
@@ -503,6 +554,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         daemon=daemon,
         transcription=transcription,
         streaming=streaming,
+        nemotron=nemotron,
         wayland=wayland,
         waybar=waybar,
         build=build,
