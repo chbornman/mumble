@@ -1,206 +1,340 @@
 # mumble
 
-whisper.cpp dictation daemon with per-machine config, Vulkan/CPU backends, and Waybar integration.
+**Offline, local voice dictation for Linux.** Press a key, talk, and the text lands
+wherever your cursor is. No cloud, no account, no telemetry — everything runs on
+your machine.
+
+mumble is a small daemon (a systemd **user** service) that ties together a few
+swappable pieces behind two keybinds: **press-to-talk dictation** and **toggle
+live streaming**. It is Linux-first and Wayland-first (developed on Hyprland;
+Sway and others work the same way), with X11 supported by choosing an X11 text
+injector.
+
+Under the hood mumble is modular. The speech-to-text engine, the way text gets
+typed into your apps, and an optional LLM cleanup pass are all **pluggable
+backends** selected in `config.toml`. Out of the box it uses
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) (CPU or Vulkan GPU). If
+you opt in, it can instead drive a real-time streaming engine built on NVIDIA's
+**Nemotron 3.5** ASR for sub-second, natively-punctuated live transcription.
+
+---
 
 ## Features
 
-- 🎯 **Fully configurable**: All settings in `config.toml` (backend, model, threads, etc.)
-- ⚡ **Three modes**: CLI (press-to-record), Server (persistent model), Stream (live VAD)
-- 📊 **Waybar integration**: Visual mode and status indicators
-- 🔧 **CPU or GPU backends**: Choose `cpu` or `vulkan` in config
-- 📝 **Quantized model support**: Use `base.en-q5_1` for faster inference
-- 🔄 **Live streaming deduplication**: Python-based smart deduplication
-- 📈 **Benchmarking suite**: Compare configurations with `benchmark.py`
-- 🚫 **100% offline**: No cloud dependencies
+- **100% offline.** Audio never leaves the machine. No API keys, no network
+  required after install.
+- **Two actions, your keybinds.** Press-to-talk dictation and a live-streaming
+  toggle. mumble never grabs keys itself — you bind them in your compositor (see
+  [Usage](#usage--keybindings)).
+- **Pluggable ASR backends.** whisper.cpp for batch press-to-talk (`whisper-cli`
+  or a persistent `whisper-server`), plus a streaming path: the legacy
+  `whisper-stream` pipeline, or an opt-in **Nemotron 3.5** streaming engine.
+- **Pluggable text injection.** Works with `wtype` (Wayland), `xdotool` (X11), or
+  `ydotool` (both) — mumble just needs one of them.
+- **CPU or GPU.** Pick `cpu` or `vulkan` per machine; quantized models (e.g.
+  `base.en-q5_1`) supported for speed.
+- **Config-driven and machine-portable.** All behavior lives in `config.toml`,
+  with per-machine overrides in `config.local.toml`. Clone, install, and it
+  adapts to the hardware.
+- **Optional LLM cleanup.** An OpenAI-compatible cleanup pass (strip fillers,
+  fix punctuation, resolve self-corrections) exists but is **off by default**.
+- **Waybar integration** for at-a-glance status, and audio feedback cues.
+- **Honest installer.** Interactive, idempotent, and conservative — it never runs
+  your package manager or `sudo` silently (see [Install](#install)).
 
-## Quick Start
+---
 
-1. **Edit config.toml** (see [Configuration](#configuration))
-2. **Build whisper.cpp**:  
-   ```bash
-   ./build_whisper.sh          # Uses config.toml settings
-   ./build_whisper.sh --backend vulkan  # Override backend
-   ```
-3. **Install**:  
-   ```bash
-   ./install.sh
-   ```
-4. **Use**:  
-   - `SUPER+D` - Toggle streaming mode  
-   - `SUPER+Shift+D` - Toggle recording (dictation)  
-   - Right-click waybar → Switch model/mode
+## Requirements / Dependencies
 
-## Configuration
+mumble's Python dependencies are installed for you into a virtualenv by the
+installer. A handful of dependencies, however, are **native programs that come
+from your distro, not from pip** — a text injector, clipboard tools, `ffmpeg`,
+and so on. The project's stance is deliberate: we **document and check** for
+those, and print the exact install command for your distro, but we **never
+silently install system packages or invoke `sudo`** on your behalf. You stay in
+control of your own system.
 
-All settings are in `config.toml`. Key sections:
+### System packages (install these yourself)
 
-### [model]
-```toml
-name = "base.en"           # Model name (ggml-base.en.bin)
-language = "en"            # "en" for English-only, "auto" for multilingual
+You need:
+
+- **A text injector — exactly one of:** `wtype` (Wayland, the default),
+  `xdotool` (X11), or `ydotool` (works on both). Tell mumble which one via
+  `wayland.typer` in `config.toml`.
+- **`wl-clipboard`** (`wl-copy` / `wl-paste`) — used for the long-text paste path
+  and for voice-command-on-selection. (On X11, the equivalent clipboard tooling.)
+- **`ffmpeg`** — audio handling.
+- **`ncat`** (from `openbsd-netcat`/`nmap`) — the keybind scripts talk to the
+  daemon over a unix socket with `ncat -U`.
+- **`git`, `cmake`, a C/C++ compiler** — to build whisper.cpp.
+- **`uv`** — manages the Python virtualenv and dependencies.
+- **A Vulkan driver** (`vulkan-tools` to verify) — only if you want GPU whisper
+  (`backend.type = "vulkan"`). CPU works with no GPU at all.
+- **Optional but recommended:** `waybar` (status module) and PipeWire's `pw-play`
+  (audio feedback cues).
+
+Copy-paste, per distro:
+
+**Arch / pacman**
+```bash
+sudo pacman -S wtype wl-clipboard ffmpeg openbsd-netcat git cmake gcc uv \
+               vulkan-tools waybar
+# X11 instead of wtype:  sudo pacman -S xdotool   (or: ydotool)
 ```
 
-### [backend]
-```toml
-type = "cpu"               # "cpu" or "vulkan"
-threads = 0                # 0 = auto (capped at max_threads)
-max_threads = 12           # Max threads when auto-detecting
-
-[backend.cpu]
-native = true              # -march=native
-openmp = true              # OpenMP threading
-lto = true                 # Link-time optimization (~5-10% faster)
-repack = true              # Weight repacking for cache
-blas = false               # Enable OpenBLAS (benchmark to verify)
-
-[backend.vulkan]
-device = 0                 # GPU device index
-cpu_fallback = true        # Fallback to CPU if Vulkan fails
+**Debian / Ubuntu / apt**
+```bash
+sudo apt install wtype wl-clipboard ffmpeg ncat git cmake g++ \
+                 vulkan-tools waybar
+# uv:  see https://docs.astral.sh/uv/  (curl installer or pipx install uv)
+# X11 instead of wtype:  sudo apt install xdotool   (or: ydotool)
 ```
 
-### [daemon]
-```toml
-mode = "cli"               # "cli" or "server"
-notifications = false      # Disable when using waybar
+**Fedora / dnf**
+```bash
+sudo dnf install wtype wl-clipboard ffmpeg nmap-ncat git cmake gcc-c++ \
+                 vulkan-tools waybar uv
+# X11 instead of wtype:  sudo dnf install xdotool   (or: ydotool)
 ```
 
-### [transcription]
-```toml
-strip_leading_artifacts = true
-strip_patterns = ["^--\\s*", "^-\\s+"]  # Remove leading "--" or "- "
-```
+> The installer detects what's missing and prints the right command for *your*
+> distro, then stops. Nothing above is installed behind your back.
 
-### [streaming]
-```toml
-step = 0                   # 0 = wait for speech via VAD
-buffer_length = 30000      # Audio buffer length (ms)
-keep = 200                 # Buffer overlap (ms)
-vad_threshold = 0.6        # Voice activity threshold (0.0-1.0)
-threads = 8                # Streaming threads
-```
+### Optional: Nemotron streaming engine (opt-in, heavy)
 
-## Building whisper.cpp
+The real-time Nemotron 3.5 streaming backend runs as a separate **sidecar**
+process on **NeMo + PyTorch**, which is multiple GB and pins its own CUDA torch —
+so it can't share mumble's lightweight venv. It is strictly opt-in and only
+pulled in if you ask for it (`install.sh --with-streaming`, or by selecting
+`backend.streaming_backend = "nemotron-streaming"`). Requirements:
 
-The `build_whisper.sh` script reads `config.toml` and builds with the specified backend:
+- An **NVIDIA GPU** with **CUDA** (driver new enough for the CUDA 12.8 wheels).
+- A **dedicated heavy venv** holding NeMo + torch (multi-GB). The installer
+  *probes and reports* this — it does not build the heavy venv for you. Build
+  it once, from the repo root:
+
+  ```bash
+  python -m venv .venv-stt            # or: uv venv .venv-stt
+  .venv-stt/bin/pip install -r mumble_stt/requirements.txt
+  ```
+
+  If your heavy venv lives elsewhere, set `[mumble_stt].venv_python` in
+  `config.local.toml` and update the `ExecStart` in `mumble-stt.service`.
+- The model `nvidia/nemotron-speech-streaming-en-0.6b`, downloaded on first
+  sidecar start (or warmed early with `--download-model`).
+
+See the sidecar sections of [ARCHITECTURE.md](ARCHITECTURE.md) for the design
+and the wire protocol.
+
+### Python dependencies
+
+Handled automatically. `install.sh` creates a `.venv` and installs everything in
+`requirements.txt` via `uv`. You don't pip-install anything by hand.
+
+---
+
+## Install
 
 ```bash
-# Build with config.toml settings (default: CPU)
-./build_whisper.sh
-
-# Force Vulkan backend
-./build_whisper.sh --backend vulkan
-
-# Clean build first
-./build_whisper.sh --clean
+git clone https://github.com/chbornman/mumble.git
+cd mumble
+# 1. Edit config.toml for your machine (model, cpu/vulkan, injector). See below.
+# 2. Run the installer.
+./install.sh
 ```
 
-To enable Vulkan GPU acceleration:
-1. Set `backend.type = "vulkan"` in config.toml
-2. Ensure you have a Vulkan-capable GPU and drivers
-3. Run `./build_whisper.sh --clean`
+`install.sh` is **interactive, idempotent, and conservative**. It:
 
-## Benchmarking
+- checks for required tools and **prints the exact install command** for anything
+  missing on your distro, then stops — it does **not** run your package manager;
+- creates the `.venv` and installs Python deps with `uv`;
+- clones and builds **whisper.cpp** for your configured backend;
+- **auto-downloads** the configured whisper model;
+- installs and starts the **systemd user service**;
+- prints the keybind commands to wire up in your compositor.
 
-Record yourself reading the benchmark passages and compare configurations:
+Useful flags:
 
 ```bash
-# 1. Record audio (save as WAV in benchmarks/audio/)
-#    Use: pw-record benchmarks/audio/passage_1_technical.wav
-
-# 2. Run benchmark
-.venv/bin/python benchmark.py          # Full benchmark
-.venv/bin/python benchmark.py --quick  # Quick test
-.venv/bin/python benchmark.py --json   # JSON output
+./install.sh --dry-run          # show what it would do, change nothing
+./install.sh --skip-build       # reuse an existing whisper.cpp build
+./install.sh --with-streaming   # set up the opt-in Nemotron sidecar (downloads GBs)
+./install.sh --download-model   # with --with-streaming: warm the model cache now
 ```
 
-See [benchmark.py](benchmark.py) for full options.
-
-## Modes
-
-| Mode | Activation | Best For |
-|------|------------|----------|
-| **Stream** (▶) | `SUPER+D` (toggle) | Live transcription, hands-free |
-| **CLI** (●) | `SUPER+Shift+D` (hold) | Quick dictation, lower memory |
-| **Server** (◆) | Waybar → Menu | Frequent use, larger models |
-
-## Model Recommendations
-
-| Model | Size | Speed (Ryzen 9 9900X) | Use Case |
-|-------|------|----------------------|----------|
-| `tiny.en` | 75 MB | ~30x realtime | Commands, quick notes |
-| `base.en` | 148 MB | ~11.5x realtime | **Default** - balanced |
-| `base.en-q5_1` | ~75 MB | ~2x faster than base.en | Faster, minimal accuracy loss |
-| `small.en` | 488 MB | ~4x realtime | Better accuracy |
-| `medium.en` | 1.5 GB | ~2x realtime | Professional work |
-| `large-v3-turbo` | 1.6 GB | ~1.5x realtime | Maximum accuracy |
-
-## Machine-Specific Tuning
-
-The optimal config depends heavily on hardware. The same model/backend combo can perform very differently across machines due to GPU driver maturity, CPU architecture, and memory bandwidth.
-
-### margo (Desktop - Ryzen 9 9900X / RTX 5080)
-
-| Setting | Value | Why |
-|---------|-------|-----|
-| Backend | `vulkan` | NVIDIA Vulkan driver, excellent ggml shader performance |
-| Model | `large-v3-turbo` | RTX 5080 handles it easily (~0.8s for any length) |
-| Mode | `cli` | Fast enough that model reload is negligible |
-| Vulkan device | `0` | Primary GPU |
-
-### asahi (MacBook Pro M1 Pro - Asahi Linux)
-
-| Setting | Value | Why |
-|---------|-------|-----|
-| Backend | `cpu` | Apple GPU Vulkan driver (Asahi/Mesa) is immature for compute shaders. CPU with ARM NEON is faster. |
-| Model | `base.en` | Best speed/accuracy tradeoff (~0.6s). `small.en` is ~1.7s, `large-v3-turbo` is ~7s on CPU. |
-| Mode | `cli` | Low memory footprint, base.en loads fast |
-| Threads | `10` | M1 Pro has 8P+2E cores |
-
-**Why not Vulkan on Apple Silicon?** The M1 Pro GPU is powerful, but Vulkan on Asahi is a reverse-engineered driver translating a foreign API to Apple's unique GPU architecture. Compute shader performance (matrix multiplications for inference) lags behind the mature CPU NEON path. This may improve as the Asahi Mesa driver matures.
-
-## Waybar Integration
-
-The waybar module shows:
-- **Icon**: Current mode (● cli, ◆ server, ~ streaming)
-- **Tooltip**: Model, backend, mode, controls
-- **Click**: Left = toggle stream, Right = model/mode menu
-
-## Troubleshooting
-
-- **Leading `--` in transcriptions**: Fixed via `strip_leading_artifacts` in config.toml
-- **Text not appearing**: Check `which wtype` and cursor is in a text field
-- **No sound**: Verify `sounds/` directory contains `snare.wav` and `hihat.wav`
-- **Streaming duplicates**: The Python deduplicator in `stream_dedup.py` handles this
-- **Logs**: `journalctl --user -u whisper.service -f`
-
-## Offline Use
-
-Everything runs locally:
-- Audio capture via PipeWire/ALSA
-- Inference via whisper.cpp (CPU or Vulkan GPU)
-- Text injection via wtype (Wayland)
-- No internet required
-
-## Future Investigation
-
-- **[Moonshine](https://github.com/usefulsensors/moonshine)** — MIT-licensed on-device speech-to-text model from Useful Sensors. Unlike Whisper (encoder-decoder, processes fixed 30s chunks), Moonshine is optimized for low-latency partial inference on chunks as short as ~1s. Could enable true real-time streaming without the buffer-fill-then-dump behavior of whisper-stream. Available as ONNX/PyTorch (no whisper.cpp-style C++ runtime yet). Sizes: Tiny (~190MB), Base (~400MB).
-
-## whisper.cpp Patches
-
-Streaming mode requires a patched `whisper-stream` binary. The upstream binary lacks `--device` for GPU selection, which is needed on multi-GPU systems (e.g. margo, where device 0 is the iGPU and device 1 is the V620).
-
-Both machines track a `mumble-patches` branch in `~/projects/whisper.cpp` with this patch. When updating whisper.cpp:
+Manage the service like any systemd user unit:
 
 ```bash
-cd ~/projects/whisper.cpp
-git fetch origin
-git rebase origin/master   # or whatever upstream branch
-# resolve conflicts if any, then rebuild
-cd build && cmake --build . --target whisper-stream -j$(nproc)
+systemctl --user status mumble.service
+journalctl --user -u mumble.service -f
 ```
+
+And when something doesn't work, run the one-command preflight:
+
+```bash
+./mumble doctor    # checks injector, clipboard, binaries, model, services, sockets
+```
+
+---
+
+## Usage / Keybindings
+
+mumble exposes two actions. It deliberately **does not bind keys for you** —
+every compositor configures hotkeys differently, and reaching into your config
+would be exactly the kind of "magic" this project avoids. You bind the keys; the
+keybind runs the `mumble` CLI (which sends a verb to the daemon over its unix
+socket):
+
+- **Press-to-talk dictation** → `mumble toggle`
+- **Toggle live streaming** → `mumble stream`
+
+(`toggle_dictation.sh` and `toggle_stream.sh` remain as thin wrappers over the
+same commands if you prefer the script paths.)
+
+Pick whatever keys you like. The snippets below use `SUPER+Shift+D` for dictation
+and `SUPER+D` for streaming, pointing at a clone in `~/projects/mumble` — adjust
+the path to wherever you cloned the repo.
+
+**Hyprland** (`~/.config/hypr/hyprland.conf`)
+```ini
+bind = SUPER SHIFT, D, exec, ~/projects/mumble/mumble toggle
+bind = SUPER,       D, exec, ~/projects/mumble/mumble stream
+```
+
+**Sway** (`~/.config/sway/config`)
+```
+bindsym $mod+Shift+d exec ~/projects/mumble/mumble toggle
+bindsym $mod+d       exec ~/projects/mumble/mumble stream
+```
+
+**i3** (`~/.config/i3/config`)
+```
+bindsym $mod+Shift+d exec --no-startup-id ~/projects/mumble/mumble toggle
+bindsym $mod+d       exec --no-startup-id ~/projects/mumble/mumble stream
+```
+
+**GNOME** (Settings → Keyboard → Custom Shortcuts; or via `gsettings`)
+Add two custom shortcuts whose commands are the full path to the `mumble`
+script plus `toggle` / `stream`, and assign keys in the dialog.
+
+**KDE Plasma** (System Settings → Shortcuts → Custom Shortcuts)
+Add a *Command/URL* shortcut for each action (`/path/to/mumble toggle` and
+`/path/to/mumble stream`), then assign a trigger key.
+
+> Tip: symlink the CLI onto your PATH (`ln -s ~/projects/mumble/mumble
+> ~/.local/bin/mumble`) and the binds become just `mumble toggle` /
+> `mumble stream`.
+
+---
+
+## Backends & Configuration
+
+`config.toml` is the control plane — every component reads it, nothing hardcodes
+paths. Per-machine overrides go in `config.local.toml` (gitignored), which is
+deep-merged on top (GPU index, model choice, endpoints, etc.). The modular pieces:
+
+**ASR backend (batch, for press-to-talk)** — `[backend].type`
+- `cpu` — whisper.cpp on CPU; always works, no GPU needed.
+- `vulkan` — whisper.cpp on a Vulkan GPU; pick the device with
+  `[backend.vulkan].device`.
+
+Daemon mode (`[daemon].mode`) chooses *how* the batch model runs: `cli` loads the
+model per request (low memory), `server` keeps it resident via `whisper-server`
+(faster, more memory).
+
+**Streaming backend (for the live toggle)** — `[backend].streaming_backend`
+- `whisper-stream` — the legacy whisper.cpp rolling-buffer pipeline plus
+  `stream_dedup.py` heuristics. Works today on CPU or Vulkan.
+- `nemotron-streaming` — the opt-in Nemotron 3.5 sidecar: true cache-aware
+  streaming with native punctuation, emitting clean FINAL segments over a unix
+  socket. The daemon's backend is a thin client to it. Tuned under `[nemotron]`
+  (including `inject_mode = "finals" | "live"` — phrase-at-a-time vs
+  type-as-you-speak) and `[mumble_stt]`. See
+  [ARCHITECTURE.md](ARCHITECTURE.md).
+
+**Text injector** — `[wayland].typer`
+- `wtype` (Wayland, default), `xdotool` (X11), or `ydotool` (both). mumble
+  auto-switches to a `wl-copy` + Ctrl+V clipboard paste for long text (past
+  `clipboard_paste_threshold`), where `wtype` gets flaky.
+
+**Optional LLM cleanup** — `[llm_postprocess]`
+- An OpenAI-compatible (`/v1/chat/completions`) cleanup pass for the
+  press-to-talk path. **Off by default** (`enabled = false`). Any HTTP failure
+  falls back to the raw transcript. Point `endpoint` at any local llama.cpp /
+  Ollama / LM Studio / vLLM server.
+
+A few common settings:
+
+```toml
+[model]
+name = "large-v3-turbo"   # or base.en, small.en, tiny.en, base.en-q5_1, …
+language = "en"
+
+[backend]
+type = "vulkan"                       # cpu | vulkan  (batch press-to-talk)
+streaming_backend = "whisper-stream"  # whisper-stream | nemotron-streaming
+
+[daemon]
+mode = "cli"                          # cli | server
+
+[wayland]
+typer = "wtype"                       # wtype | xdotool | ydotool
+```
+
+To switch a backend, change the value and restart the service
+(`systemctl --user restart mumble.service`). `config.toml` is fully commented;
+see [ARCHITECTURE.md](ARCHITECTURE.md) for the seams and the full design.
+
+### Model recommendations
+
+| Model | Size | Use case |
+|-------|------|----------|
+| `tiny.en` | 75 MB | Commands, quick notes |
+| `base.en` | 148 MB | Balanced default (great on CPU) |
+| `base.en-q5_1` | ~75 MB | Faster than base.en, minimal accuracy loss |
+| `small.en` | 488 MB | Better accuracy |
+| `medium.en` | 1.5 GB | Professional work |
+| `large-v3-turbo` | 1.6 GB | Maximum accuracy (best on a capable GPU) |
+
+The optimal model + backend is hardware-dependent. A fast GPU loves
+`large-v3-turbo` on Vulkan; a CPU-only or immature-GPU-driver machine is usually
+happier on `base.en` with `cpu`. Put those choices in `config.local.toml`.
+
+---
+
+## How it works
+
+A long-lived daemon (`whisper_daemon.py`, run as `mumble.service`) owns a unix
+socket, recording and streaming lifecycle, backend selection, the
+transcribe → optional-cleanup → inject pipeline, and feedback (sounds, notify,
+Waybar). Keybinds are tiny IPC clients that send it text verbs. ASR backends, the
+text injector, and the optional LLM are swappable behind small documented
+interfaces.
+
+For the full picture — the component diagram, the IPC wire format, the sidecar
+design and wire protocol, and exactly where the extension seams are — read
+**[ARCHITECTURE.md](ARCHITECTURE.md)**. Open roadmap items live in
+[TODO.md](TODO.md).
+
+---
+
+## Contributing
+
+Contributions are welcome — adding an ASR backend, a text injector, or a
+keybind client all happen through the documented seams without daemon surgery.
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to set up the venv, run the
+tests, and the project's no-magic-install philosophy.
+
+---
 
 ## Credits
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Core inference engine
-- [Asahi Linux](https://asahilinux.org/) - Platform inspiration
-- Built with inspiration from desktop whisper-dictation-daemon
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — core batch inference
+- [NVIDIA Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+  — optional streaming engine
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Caleb Bornman.
