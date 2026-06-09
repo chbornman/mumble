@@ -194,9 +194,7 @@ class LLMPostProcessor:
             else:
                 data = resp.json()
                 raw_output = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
                     or ""
                 ).strip()
         except Exception as e:
@@ -242,9 +240,7 @@ class LLMPostProcessor:
         instruction.
         """
         if not HAS_REQUESTS:
-            self.logger.warning(
-                "Command mode enabled but `requests` not installed"
-            )
+            self.logger.warning("Command mode enabled but `requests` not installed")
             return PostprocessOutcome(
                 cleaned=selected_text,
                 raw_llm_output="",
@@ -286,9 +282,7 @@ class LLMPostProcessor:
             else:
                 data = resp.json()
                 raw_output = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
                     or ""
                 ).strip()
         except Exception as e:

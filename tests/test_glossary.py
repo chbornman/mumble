@@ -62,7 +62,7 @@ class TestLoadGlossary(unittest.TestCase):
         self.assertEqual(g.literals, [])
 
     def test_rule_syntax_quoted_line(self):
-        path = write_vocab('"\'Claude\' should always be capitalized."\n')
+        path = write_vocab("\"'Claude' should always be capitalized.\"\n")
         g = load_glossary(path)
         self.assertEqual(g.rules, ["'Claude' should always be capitalized."])
 
@@ -71,16 +71,14 @@ class TestLoadGlossary(unittest.TestCase):
             "# header\n"
             "Python, Rust\n"
             "ant row pick = Anthropic\n"
-            '"Prefer the word \'repo\' over \'repository\'."\n'
+            "\"Prefer the word 'repo' over 'repository'.\"\n"
             "\n"
             "Hyprland\n"
         )
         g = load_glossary(path)
         self.assertEqual(g.literals, ["Python", "Rust", "Hyprland"])
         self.assertEqual(g.mappings, [("ant row pick", "Anthropic")])
-        self.assertEqual(
-            g.rules, ["Prefer the word 'repo' over 'repository'."]
-        )
+        self.assertEqual(g.rules, ["Prefer the word 'repo' over 'repository'."])
 
     def test_mapping_without_whitespace_around_equals(self):
         path = write_vocab("foo=bar\n")

@@ -50,6 +50,7 @@ import sounddevice as sd
 
 from benchmark import compute_wer
 from config_loader import Config, load_config
+
 # StreamDeduplicator lives in whisper_daemon; stream_dedup.py is a runtime
 # wrapper that re-exports it and pulls in the whole daemon on import, so we
 # go straight to the source class here.
@@ -306,9 +307,7 @@ def record_passage(
     print(f"Recorded {duration:.1f}s → {out_path}")
 
 
-def write_config_local_overrides(
-    project_dir: Path, overrides: dict[str, Any]
-) -> Path:
+def write_config_local_overrides(project_dir: Path, overrides: dict[str, Any]) -> Path:
     """Append/merge a [streaming] override block into config.local.toml.
 
     Never touches config.toml. We rewrite only the streaming section's
@@ -353,16 +352,14 @@ def write_config_local_overrides(
         for line in merged.splitlines():
             rebuilt.append(line)
             header = section_header_re.match(line)
-            if (
-                not inserted
-                and header
-                and header.group("name").strip() == "streaming"
-            ):
+            if not inserted and header and header.group("name").strip() == "streaming":
                 rebuilt.extend(assignment_lines)
                 inserted = True
         new_text = "\n".join(rebuilt)
     else:
-        block = "\n".join(["", "[streaming]  # written by calibrate.py", *assignment_lines])
+        block = "\n".join(
+            ["", "[streaming]  # written by calibrate.py", *assignment_lines]
+        )
         new_text = (merged + "\n" + block + "\n").lstrip()
 
     local_path.write_text(new_text.rstrip() + "\n")
@@ -448,14 +445,10 @@ def print_report(report: CalibrationReport) -> None:
     print(f"Calibration report — {report.passage_name}")
     print("=" * 72)
     print("\nTop configurations (lower is better):")
-    print(
-        f"  {'#':<3} {'score':>8} {'WER':>7} {'dupe':>7}  params"
-    )
+    print(f"  {'#':<3} {'score':>8} {'WER':>7} {'dupe':>7}  params")
     for i, r in enumerate(report.ranked[:5], start=1):
         params = ", ".join(f"{k}={v}" for k, v in r.params.items())
-        print(
-            f"  {i:<3} {r.score:>8.4f} {r.wer:>6.1%} {r.dupe_rate:>6.1%}  {params}"
-        )
+        print(f"  {i:<3} {r.score:>8.4f} {r.wer:>6.1%} {r.dupe_rate:>6.1%}  {params}")
 
     print("\nPer-knob sensitivity (avg score by value — lower is better):")
     for knob, buckets in report.per_knob_sensitivity.items():

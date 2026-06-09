@@ -18,8 +18,7 @@ from __future__ import annotations
 # cleanup contract in the base prompt still applies.
 BUILTIN_MODES: dict[str, str] = {
     "email": (
-        "Format as a polite, clear email. Preserve the user's voice. "
-        "Keep it brief."
+        "Format as a polite, clear email. Preserve the user's voice. Keep it brief."
     ),
     "commit": (
         "Convert to a Conventional Commit. Format: `type(scope): description`. "
@@ -30,9 +29,7 @@ BUILTIN_MODES: dict[str, str] = {
         "Format as a precise LLM prompt. Remove hedging. Tighten "
         "instructions. Preserve intent."
     ),
-    "rewrite": (
-        "Rewrite for concision and clarity. No added content."
-    ),
+    "rewrite": ("Rewrite for concision and clarity. No added content."),
 }
 
 
@@ -56,9 +53,7 @@ def resolve_mode_block(mode: str | None) -> str | None:
     return BUILTIN_MODES.get(key)
 
 
-def resolve_mode_for_app(
-    app_class: str | None, apps_config: dict | None
-) -> str | None:
+def resolve_mode_for_app(app_class: str | None, apps_config: dict | None) -> str | None:
     """Pick the per-app default mode, if one is configured.
 
     Used by item #2's per-app config to tie a window class to a default

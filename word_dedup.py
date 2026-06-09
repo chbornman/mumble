@@ -77,9 +77,7 @@ class WordLevelDeduplicator:
             immediate_repeat_window=getattr(
                 config.streaming, "immediate_repeat_window", 8
             ),
-            max_committed_words=getattr(
-                config.streaming, "max_committed_words", 200
-            ),
+            max_committed_words=getattr(config.streaming, "max_committed_words", 200),
         )
         self.logger = logger
         self.committed_tokens: list[str] = []
@@ -177,8 +175,6 @@ class WordLevelDeduplicator:
                 trim = n
                 break
         if trim:
-            self.logger.debug(
-                f"word-dedup suppressed {trim}-word immediate repeat"
-            )
+            self.logger.debug(f"word-dedup suppressed {trim}-word immediate repeat")
             new_tokens = new_tokens[trim:]
         return " ".join(new_tokens)

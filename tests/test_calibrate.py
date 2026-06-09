@@ -72,7 +72,7 @@ class TestWriteConfigLocalOverrides(unittest.TestCase):
     def test_preserves_unrelated_sections(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "config.local.toml"
-            p.write_text("[backend]\ntype = \"vulkan\"\n")
+            p.write_text('[backend]\ntype = "vulkan"\n')
             write_config_local_overrides(Path(tmpdir), {"keep": 200})
             text = p.read_text()
             self.assertIn("[backend]", text)

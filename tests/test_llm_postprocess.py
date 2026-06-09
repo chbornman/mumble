@@ -76,9 +76,7 @@ class TestBuildSystemPrompt(unittest.TestCase):
         self.assertIn("Claude", p)
 
     def test_context_and_mode_blocks_appended(self):
-        p = build_system_prompt(
-            context_block="APPCTX", mode_block="MODEBLOCK"
-        )
+        p = build_system_prompt(context_block="APPCTX", mode_block="MODEBLOCK")
         self.assertIn("APPCTX", p)
         self.assertIn("MODEBLOCK", p)
 
@@ -95,9 +93,7 @@ class TestLLMPostProcessorAuditLog(unittest.TestCase):
             logger = logging.getLogger("test")
             proc = LLMPostProcessor(cfg, logger)
 
-            fake_response = {
-                "choices": [{"message": {"content": "Cleaned output."}}]
-            }
+            fake_response = {"choices": [{"message": {"content": "Cleaned output."}}]}
 
             class FakeResp:
                 status_code = 200
@@ -213,9 +209,7 @@ class TestLLMPostProcessorAuditLog(unittest.TestCase):
 
             def json(self):
                 return {
-                    "choices": [
-                        {"message": {"content": "I work at ant row pick."}}
-                    ]
+                    "choices": [{"message": {"content": "I work at ant row pick."}}]
                 }
 
         with patch("llm_postprocess.requests.post", return_value=FakeResp()):
@@ -273,9 +267,7 @@ class TestTransformCommand(unittest.TestCase):
                 return {}
 
         with patch("llm_postprocess.requests.post", return_value=FakeResp()):
-            outcome = proc.transform_command(
-                "selected", "do a thing"
-            )
+            outcome = proc.transform_command("selected", "do a thing")
         self.assertEqual(outcome.cleaned, "selected")
         self.assertEqual(outcome.error, "http-500")
 

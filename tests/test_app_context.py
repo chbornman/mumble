@@ -33,27 +33,32 @@ class TestDetectAppContext(unittest.TestCase):
         def boom(*a, **k):
             raise FileNotFoundError("hyprctl")
 
-        with patch.dict(
-            "os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}, clear=True
-        ), patch("app_context.subprocess.run", side_effect=boom):
+        with (
+            patch.dict(
+                "os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}, clear=True
+            ),
+            patch("app_context.subprocess.run", side_effect=boom),
+        ):
             self.assertTrue(detect_app_context().is_empty())
 
     def test_parses_class_and_title(self):
         payload = '{"class": "Alacritty", "title": "nvim file.py"}'
-        with patch.dict(
-            "os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}, clear=True
-        ), patch(
-            "app_context.subprocess.run", return_value=FakeCompleted(payload)
+        with (
+            patch.dict(
+                "os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}, clear=True
+            ),
+            patch("app_context.subprocess.run", return_value=FakeCompleted(payload)),
         ):
             ctx = detect_app_context()
         self.assertEqual(ctx.app_class, "Alacritty")
         self.assertEqual(ctx.window_title, "nvim file.py")
 
     def test_malformed_json_degrades_gracefully(self):
-        with patch.dict(
-            "os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}, clear=True
-        ), patch(
-            "app_context.subprocess.run", return_value=FakeCompleted("not json")
+        with (
+            patch.dict(
+                "os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}, clear=True
+            ),
+            patch("app_context.subprocess.run", return_value=FakeCompleted("not json")),
         ):
             self.assertTrue(detect_app_context().is_empty())
 
