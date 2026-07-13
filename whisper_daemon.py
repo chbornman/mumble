@@ -37,7 +37,12 @@ import constants
 from clipboard_paste import paste_via_clipboard
 from config_loader import Config, load_config
 from text_injector import resolve_injector
-from glossary import Glossary, format_whisper_prompt, load_glossary
+from glossary import (
+    WHISPER_PROMPT_CHAR_BUDGET,
+    Glossary,
+    format_whisper_prompt,
+    load_glossary,
+)
 from llm_postprocess import LLMPostProcessor
 from modes import available_modes, resolve_mode_block, resolve_mode_for_app
 
@@ -227,12 +232,12 @@ class WhisperDaemon:
             self.logger.error(f"Whisper CLI not found: {config.whisper_cli_path}")
             sys.exit(1)
 
-        # Load vocab (legacy flat prompt for Whisper --prompt)
+        # Load and prioritize vocab for Whisper --prompt.
         self.vocab_prompt = self._load_vocab()
 
         # LLM post-processing (optional, off by default). When enabled we also
-        # parse vocab.txt into a structured Glossary for LLM hints + determ-
-        # inistic substitutions; the Whisper --prompt string above is unchanged.
+        # retain the structured Glossary for LLM hints + deterministic
+        # substitutions. Whisper prompt parsing uses the same format regardless.
         self.glossary: Glossary | None = None
         self.llm_processor: LLMPostProcessor | None = None
         if config.llm_postprocess.enabled:
@@ -310,7 +315,7 @@ class WhisperDaemon:
             self.logger.info(f"Vocab prompt loaded ({len(self.vocab_prompt)} chars)")
 
     def _load_vocab(self) -> str | None:
-        """Load vocabulary prompt from file."""
+        """Load a bounded Whisper prompt, favoring later personalized terms."""
         vocab_file = self.config.paths.vocab_file
         if not vocab_file or not vocab_file.exists():
             if vocab_file:
@@ -318,15 +323,15 @@ class WhisperDaemon:
             return None
 
         try:
-            with open(vocab_file) as f:
-                words = []
-                for line in f:
-                    line = line.split("#")[0].strip()
-                    if line:
-                        words.extend(w.strip() for w in line.split(",") if w.strip())
-                prompt = ", ".join(words)
-                self.logger.info(f"Loaded {len(words)} vocab words from {vocab_file}")
-                return prompt
+            glossary = load_glossary(vocab_file)
+            prompt = format_whisper_prompt(
+                glossary, max_chars=WHISPER_PROMPT_CHAR_BUDGET
+            )
+            self.logger.info(
+                f"Loaded bounded vocab prompt from {vocab_file} "
+                f"({len(prompt)}/{WHISPER_PROMPT_CHAR_BUDGET} chars)"
+            )
+            return prompt or None
         except Exception as e:
             self.logger.error(f"Failed to load vocab file: {e}")
             return None

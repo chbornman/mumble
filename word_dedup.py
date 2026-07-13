@@ -15,7 +15,7 @@ Three-layer strategy:
      whisper reprocesses an earlier boundary.
   3. Immediate-repeat suppression: if the first N words of the would-be
      emit already sit at the tail of committed, drop that prefix instead
-     of re-typing it. This is the specific failure from TODO.md #7:
+     of re-typing it. This is the pause/resume duplication failure:
      pause mid-phrase → VAD emits → resume → dupe.
 
 Feature-flag gate: selected in stream_dedup.py based on

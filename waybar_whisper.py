@@ -7,7 +7,6 @@ All settings driven by config.toml.
 
 import json
 import socket
-import sys
 import time
 from pathlib import Path
 

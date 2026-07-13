@@ -6,7 +6,7 @@ Reads config.toml and provides typed access to all settings.
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 

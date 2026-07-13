@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from glossary import (
+    WHISPER_PROMPT_CHAR_BUDGET,
     Glossary,
     apply_mappings,
     format_llm_hint,
@@ -90,6 +91,11 @@ class TestLoadGlossary(unittest.TestCase):
         g = load_glossary(path)
         self.assertEqual(g.literals, ["Python"])
 
+    def test_hash_inside_term_is_not_an_inline_comment(self):
+        path = write_vocab("C#, F# # languages\n")
+        g = load_glossary(path)
+        self.assertEqual(g.literals, ["C#", "F#"])
+
 
 class TestApplyMappings(unittest.TestCase):
     def test_case_insensitive_word_boundary(self):
@@ -134,6 +140,37 @@ class TestFormatters(unittest.TestCase):
         self.assertEqual(prompt.lower().count("claude"), 1)
         self.assertIn("ant row pick", prompt)
         self.assertIn("Anthropic", prompt)
+
+    def test_whisper_prompt_budget_prefers_later_terms(self):
+        g = Glossary(literals=["generic-one", "generic-two", "ProjectThing", "Margo"])
+
+        prompt = format_whisper_prompt(g, max_chars=19)
+
+        self.assertEqual(prompt, "ProjectThing, Margo")
+        self.assertLessEqual(len(prompt), 19)
+
+    def test_whisper_prompt_budget_keeps_terms_whole(self):
+        g = Glossary(literals=["small", "term-that-will-not-fit", "tail"])
+
+        prompt = format_whisper_prompt(g, max_chars=12)
+
+        self.assertEqual(prompt, "tail")
+        self.assertNotIn("term-that", prompt)
+
+    def test_whisper_prompt_budget_preserves_mapping_terms(self):
+        g = Glossary(
+            literals=["generic"],
+            mappings=[("ant row pick", "Anthropic")],
+        )
+
+        prompt = format_whisper_prompt(g, max_chars=25)
+
+        self.assertEqual(prompt, "ant row pick, Anthropic")
+
+    def test_default_whisper_budget_is_a_conservative_token_proxy(self):
+        # Keep this policy explicit: the daemon must not silently grow a prompt
+        # past whisper.cpp's useful initial-prompt context.
+        self.assertEqual(WHISPER_PROMPT_CHAR_BUDGET, 896)
 
     def test_llm_hint_empty_when_glossary_empty(self):
         self.assertEqual(format_llm_hint(Glossary()), "")

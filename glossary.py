@@ -1,5 +1,5 @@
 """
-Glossary parser for LLM post-processing.
+Shared vocabulary/glossary parser for Whisper prompting and LLM cleanup.
 
 Parses vocab.txt into structured entries:
 - Literals: "Claude" — terms to preserve exactly.
@@ -10,8 +10,8 @@ Backward compatible with the previous flat "one or more comma-separated words
 per line" vocab format: lines without `=` or surrounding quotes are parsed as
 literals, so existing vocab.txt files work unchanged.
 
-Feature-scoped: only consumed when [llm_postprocess] is enabled in config.
-When disabled, whisper_daemon keeps using the legacy flat Whisper prompt.
+The literal and mapping entries are always available to Whisper prompting.
+Rules and deterministic substitutions are consumed by optional LLM cleanup.
 """
 
 from __future__ import annotations
@@ -19,6 +19,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# Whisper has a 448-token text context and whisper.cpp limits an initial prompt
+# to half of it. Token counts vary by spelling, so use the common four-characters
+# per-token proxy (224 * 4) rather than coupling startup to a model-specific
+# tokenizer. whisper.cpp remains the final authority if unusual terms tokenize
+# more densely. Prompt selection keeps whole terms and favors the end of
+# vocab.txt, where user/project-specific entries conventionally live.
+WHISPER_PROMPT_CHAR_BUDGET = 896
 
 
 @dataclass
@@ -52,7 +61,9 @@ def load_glossary(path: Path | None) -> Glossary:
                 glossary.rules.append(rule)
             continue
 
-        line = stripped.split("#", 1)[0].strip()
+        # Inline comments require whitespace before ``#`` so vocabulary such
+        # as C# remains intact. Full-line comments were handled above.
+        line = re.split(r"\s+#", stripped, maxsplit=1)[0].strip()
         if not line:
             continue
 
@@ -88,12 +99,21 @@ def apply_mappings(text: str, glossary: Glossary) -> str:
     return result
 
 
-def format_whisper_prompt(glossary: Glossary) -> str:
+def format_whisper_prompt(
+    glossary: Glossary, *, max_chars: int | None = None
+) -> str:
     """Flatten glossary to a comma-separated Whisper `--prompt` string.
 
     Includes literals plus both sides of each mapping (the ASR can benefit
     from knowing both the misheard source and the intended destination).
-    Rules are LLM-only and excluded here.
+    Rules are LLM-only and excluded here. Terms are deduplicated
+    case-insensitively while retaining their original order.
+
+    If ``max_chars`` is set, the result contains only complete comma-separated
+    terms that fit the budget. Selection starts at the end so personalized
+    entries later in vocab.txt take precedence, then restores source order in
+    the returned prompt. A character budget is deliberately used as a stable,
+    tokenizer-free proxy for whisper.cpp's practical prompt-token limit.
     """
     terms: list[str] = []
     terms.extend(glossary.literals)
@@ -108,7 +128,26 @@ def format_whisper_prompt(glossary: Glossary) -> str:
         if key not in seen:
             seen.add(key)
             out.append(t)
-    return ", ".join(out)
+    if max_chars is None:
+        return ", ".join(out)
+    if max_chars <= 0:
+        return ""
+
+    selected_reversed: list[str] = []
+    used_chars = 0
+    for term in reversed(out):
+        separator_chars = 2 if selected_reversed else 0
+        added_chars = separator_chars + len(term)
+        if used_chars + added_chars <= max_chars:
+            selected_reversed.append(term)
+            used_chars += added_chars
+        elif selected_reversed:
+            # Keep a contiguous suffix. Searching farther back for tiny terms
+            # would use spare characters on arbitrary generic entries and make
+            # the priority policy surprising.
+            break
+
+    return ", ".join(reversed(selected_reversed))
 
 
 def format_llm_hint(glossary: Glossary) -> str:

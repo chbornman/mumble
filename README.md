@@ -108,7 +108,10 @@ so it can't share mumble's lightweight venv. It is strictly opt-in and only
 pulled in if you ask for it (`install.sh --with-streaming`, or by selecting
 `backend.streaming_backend = "nemotron-streaming"`). Requirements:
 
-- An **NVIDIA GPU** with **CUDA** (driver new enough for the CUDA 12.8 wheels).
+- An **NVIDIA GPU** with **CUDA** (driver new enough for the CUDA 12.8 wheels),
+  or a fast CPU with enough DRAM. Select it with `[mumble_stt].device = "cuda"`
+  or `"cpu"`; CPU inference uses float32 and is substantially slower but avoids
+  keeping the model in VRAM.
 - A **dedicated heavy venv** holding NeMo + torch (multi-GB). The installer
   *probes and reports* this — it does not build the heavy venv for you. Build
   it once, from the repo root:
@@ -122,6 +125,15 @@ pulled in if you ask for it (`install.sh --with-streaming`, or by selecting
   `config.local.toml` and update the `ExecStart` in `mumble-stt.service`.
 - The model `nvidia/nemotron-speech-streaming-en-0.6b`, downloaded on first
   sidecar start (or warmed early with `--download-model`).
+
+CPU mode is a practical memory-placement choice, not just an emergency
+fallback. In an earlier direct-engine microbenchmark with the model already
+loaded, an 11.0-second sample took 7.087 seconds on CPU versus 0.652 seconds on
+CUDA (about 10.9x slower, but still 1.55x real time). Its paced direct-engine
+run finished 156 ms after the audio ended. The CPU-resident sidecar used about
+5.6 GB of DRAM and no idle VRAM. These measurements exclude some end-to-end
+sidecar overhead measured below and are one-host observations, not portable
+guarantees; benchmark your own workload before choosing a device.
 
 See the sidecar sections of [ARCHITECTURE.md](ARCHITECTURE.md) for the design
 and the wire protocol.
@@ -263,6 +275,37 @@ model per request (low memory), `server` keeps it resident via `whisper-server`
   falls back to the raw transcript. Point `endpoint` at any local llama.cpp /
   Ollama / LM Studio / vLLM server.
 
+### Vocabulary behavior
+
+`[paths].vocab_file` points to the shared `vocab.txt` source. Its consumers use
+it differently:
+
+- Batch whisper.cpp gets a case-insensitively deduplicated initial prompt,
+  bounded to 896 characters. Later entries win when the list is too long, so
+  keep current project and personal terms near the end. `benchmark.py` builds
+  the prompt through the same path as the daemon.
+- The optional LLM cleanup path parses literals, correction mappings, and
+  quoted rules into a structured glossary when that feature is enabled.
+- Nemotron can opt into an experimental decoder-level RNNT boosting tree with
+  `[mumble_stt].vocab_biasing_enabled = true`. It uses literal entries and the
+  intended destination of mappings, not commonly misheard mapping sources or
+  free-form LLM rules. The committed default is `false`.
+
+Nemotron biasing is static and global for the loaded sidecar: the phrase tree is
+built at startup, applies to every streaming frame, and survives utterance
+resets. Restart `mumble-stt.service` after changing the vocabulary or its bias
+settings. On CPU it uses the PyTorch implementation with Triton and CUDA graph
+decoding disabled.
+
+The live CPU smoke used a 371-phrase snapshot; the subsequently expanded file
+currently resolves to 407 phrases. That load test is not an accuracy result. On
+the same 11-second sample, biasing produced the identical
+transcript both ways. Bias off took 11.322 seconds end to end (0.972x real-time
+throughput) with a 1.024-second paced post-audio tail; bias on took 11.923
+seconds (0.923x) with a 1.476-second tail. Keep it disabled until representative
+user speech demonstrates better technical-term recall without unacceptable
+over-biasing.
+
 A few common settings:
 
 ```toml
@@ -284,6 +327,18 @@ typer = "wtype"                       # wtype | xdotool | ydotool
 To switch a backend, change the value and restart the service
 (`systemctl --user restart mumble.service`). `config.toml` is fully commented;
 see [ARCHITECTURE.md](ARCHITECTURE.md) for the seams and the full design.
+
+With `[nemotron].inject_mode = "live"`, seeing the last few words disappear and
+be retyped is expected. PARTIAL hypotheses are replaceable, so the model may
+revise them as more audio arrives; mumble reconciles the visible text to the
+new hypothesis and then to the FINAL. This correction behavior is part of live
+ASR and happens even when `[llm_postprocess].enabled = false` — it is not an LLM
+rewriting the transcript.
+
+Wispr-style cleanup is a separate optional stage. Vocabulary prompting and
+RNNT biasing affect recognition; `[llm_postprocess]` edits completed batch
+transcripts through an OpenAI-compatible endpoint. It remains off by default
+and is not part of Nemotron's low-latency streaming path.
 
 ### Model recommendations
 

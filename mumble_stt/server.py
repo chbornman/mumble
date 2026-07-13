@@ -59,12 +59,28 @@ class Sidecar:
         it just logs) and exits non-zero so systemd Restart kicks in.
         """
         from mumble_stt.engine import StreamingEngine  # heavy import, lazy
+        from mumble_stt.vocabulary import load_vocabulary
+
+        vocab_phrases = []
+        if self.cfg.vocab_biasing_enabled:
+            vocab_phrases = load_vocabulary(
+                self.cfg.vocab_file, self.cfg.vocab_biasing_max_phrases
+            )
+            if not vocab_phrases:
+                raise ValueError(
+                    f"vocabulary biasing enabled but {self.cfg.vocab_file} has no phrases"
+                )
 
         self.engine = StreamingEngine(
             model_name=self.cfg.model,
             att_context_size=self.cfg.att_context_size,
             sample_rate=self.cfg.sample_rate,
             eou_silence_ms=self.cfg.eou_silence_ms,
+            device=self.cfg.device,
+            vocab_phrases=vocab_phrases,
+            vocab_biasing_context_score=self.cfg.vocab_biasing_context_score,
+            vocab_biasing_depth_scaling=self.cfg.vocab_biasing_depth_scaling,
+            vocab_biasing_alpha=self.cfg.vocab_biasing_alpha,
         )
         self.engine.load()
 
@@ -311,6 +327,9 @@ def _selftest(cfg: SidecarConfig) -> int:
     print(f"[selftest] venv_python   = {cfg.venv_python}")
     print(f"[selftest] att_context   = {cfg.att_context} -> {cfg.att_context_size}")
     print(f"[selftest] log_level     = {cfg.log_level}")
+    print(f"[selftest] device        = {cfg.device} ({cfg.compute_dtype})")
+    print(f"[selftest] vocab_biasing = {cfg.vocab_biasing_enabled}")
+    print(f"[selftest] vocab_file    = {cfg.vocab_file}")
 
     # Protocol round-trip sanity (stdlib only).
     frame = proto.hello("sid-123", want_partials=True)
@@ -320,8 +339,8 @@ def _selftest(cfg: SidecarConfig) -> int:
     f = proto.final(2, "Hello, world.")
     assert proto.decode_json(f[5:])["text"] == "Hello, world.", "final roundtrip"
     a = proto.audio(b"\x00\x01" * 1600)
-    at, ap = proto._HEADER.unpack(a[:5])
-    assert at == proto.TYPE_AUDIO and len(ap := a[5:]) == 3200, "audio roundtrip"
+    at, _ = proto._HEADER.unpack(a[:5])
+    assert at == proto.TYPE_AUDIO and len(a[5:]) == 3200, "audio roundtrip"
     print("[selftest] protocol round-trips OK")
 
     venv_ok = os.access(cfg.venv_python, os.X_OK)

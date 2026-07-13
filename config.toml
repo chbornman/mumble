@@ -280,8 +280,13 @@ legacy_fallback = true
 # need `systemctl --user restart mumble-stt.service` to take effect (the daemon
 # restart is separate). Only consumed when streaming_backend = "nemotron-streaming".
 
-# Hugging Face model id loaded resident on the GPU.
+# Hugging Face model id loaded resident on the selected device.
 model = "nvidia/nemotron-speech-streaming-en-0.6b"
+
+# Inference device. CUDA is about 11x faster on a 5080; CPU avoids persistent
+# VRAM use and can still keep up in real time on a Ryzen 9 9900X when resident.
+# CPU uses float32 automatically; CUDA uses bfloat16.
+device = "cuda"
 
 # Audio sample rate (Hz). The model is 16 kHz; don't change unless you know why.
 sample_rate = 16000
@@ -296,6 +301,25 @@ att_context = "default"
 # fragmented); higher = waits for cleaner sentence breaks. This is the main
 # "snappiness" knob for finals mode.
 eou_silence_ms = 800
+
+# Experimental decoder-level context biasing from the same vocab.txt used by
+# press-to-talk Whisper. This uses NeMo's global RNNT boosting tree, so it
+# applies to every streaming frame and persists across end-of-utterance resets.
+# Keep disabled until a CPU live-audio smoke test confirms acceptable latency
+# and false-positive behavior on this model/NeMo version.
+vocab_biasing_enabled = false
+
+# Optional sidecar-specific path; omitted means [paths].vocab_file above.
+# vocab_file = "vocab.txt"
+
+# Bias strength controls. Higher values favor vocabulary phrases more strongly
+# but can hallucinate technical terms over ordinary speech. Start conservative.
+vocab_biasing_context_score = 1.0
+vocab_biasing_depth_scaling = 2.0
+vocab_biasing_alpha = 1.0
+
+# Refuse unexpectedly large files rather than silently dropping phrases.
+vocab_biasing_max_phrases = 1024
 
 # Sidecar log verbosity: "debug" | "info" | "warning" | "error".
 log_level = "info"
@@ -454,7 +478,7 @@ max_title_chars = 200
 
 # Optional per-app style/mode overrides, keyed by Hyprland window class.
 # When the focused class matches, the `style` is appended to the cleanup
-# prompt; the `mode` selects a preset transform (see item #3).
+# prompt; the `mode` selects a preset transform.
 #
 # [llm_postprocess.apps.Alacritty]
 # style = "terse; user is in a terminal; no extra punctuation"

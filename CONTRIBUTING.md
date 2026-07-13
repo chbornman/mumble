@@ -54,8 +54,27 @@ the heavy NeMo venv:
 python mumble_stt/server.py --selftest
 ```
 
+Changes to the NeMo engine itself must also be exercised in the heavy venv on
+the device paths they claim to support. In particular, do not infer CPU support
+from CUDA success (or the reverse). Record the model state (cold or already
+loaded), audio duration, processing duration, post-audio tail for paced tests,
+resident DRAM/VRAM, and hardware when publishing performance results.
+
 Add tests for new behavior in `tests/`, following the existing
 `test_<module>.py` layout and `unittest.TestCase` style.
+
+Vocabulary changes need separate coverage for the bounded batch Whisper
+prompt, the optional structured LLM glossary, and the opt-in Nemotron context
+bias path. They are distinct consumers: Whisper includes mapping sources and
+destinations, while Nemotron includes only destinations, and quoted cleanup
+rules are LLM-only. Keep daemon and benchmark prompt construction identical.
+
+Nemotron vocabulary tests must cover the disabled path, CUDA/Triton and
+CPU/PyTorch decoder configuration, duplicate handling, mapping selection,
+phrase-count refusal, desired technical terms, and ordinary-speech negative
+cases for over-biasing. A successful load or unchanged generic transcript is a
+smoke test, not evidence of better accuracy; report bias-off and bias-on results
+without implying improvement unless a representative term set demonstrates it.
 
 ## The extension seams
 

@@ -32,7 +32,6 @@ Usage:
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
@@ -40,6 +39,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from config_loader import load_config
+from glossary import (
+    WHISPER_PROMPT_CHAR_BUDGET,
+    format_whisper_prompt,
+    load_glossary,
+)
 
 
 @dataclass
@@ -233,16 +237,14 @@ def run_benchmarks(
     whisper_cli = config.whisper_cli_path
     models_dir = config.paths.models_dir
 
-    # Load vocab
+    # Use the same bounded, later-entry-prioritized prompt as the daemon so
+    # benchmark accuracy reflects the deployed transcription path.
     vocab_prompt = None
     if config.paths.vocab_file and config.paths.vocab_file.exists():
-        with open(config.paths.vocab_file) as f:
-            words = []
-            for line in f:
-                line = line.split("#")[0].strip()
-                if line:
-                    words.extend(w.strip() for w in line.split(",") if w.strip())
-            vocab_prompt = ", ".join(words)
+        glossary = load_glossary(config.paths.vocab_file)
+        vocab_prompt = format_whisper_prompt(
+            glossary, max_chars=WHISPER_PROMPT_CHAR_BUDGET
+        )
 
     total = len(audio_files) * len(models) * len(thread_counts)
     current = 0
@@ -409,13 +411,13 @@ def main():
     )
     if not audio_dir.exists():
         print(f"Audio directory not found: {audio_dir}")
-        print(f"Create it and add audio files, or use --audio-dir")
-        print(f"\nExpected structure:")
+        print("Create it and add audio files, or use --audio-dir")
+        print("\nExpected structure:")
         print(f"  {audio_dir}/")
-        print(f"    passage_1.wav     # Your recorded audio")
-        print(f"    passage_1.txt     # Reference text for that audio")
-        print(f"    passage_2.wav")
-        print(f"    passage_2.txt")
+        print("    passage_1.wav     # Your recorded audio")
+        print("    passage_1.txt     # Reference text for that audio")
+        print("    passage_2.wav")
+        print("    passage_2.txt")
         sys.exit(1)
 
     audio_files = find_audio_files(audio_dir)

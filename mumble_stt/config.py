@@ -35,6 +35,13 @@ DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_VENV_PYTHON = str(_REPO_DIR / ".venv-stt" / "bin" / "python")
 DEFAULT_ATT_CONTEXT = "default"
 DEFAULT_LOG_LEVEL = "info"
+DEFAULT_DEVICE = "cuda"
+DEFAULT_VOCAB_BIASING_ENABLED = False
+DEFAULT_VOCAB_FILE = "vocab.txt"
+DEFAULT_VOCAB_BIASING_CONTEXT_SCORE = 1.0
+DEFAULT_VOCAB_BIASING_DEPTH_SCALING = 2.0
+DEFAULT_VOCAB_BIASING_ALPHA = 1.0
+DEFAULT_VOCAB_BIASING_MAX_PHRASES = 1024
 # End-of-utterance silence (ms) before the model commits a FINAL. Lower = finals
 # fire on shorter pauses (snappier, more fragmented); higher = waits for clearer
 # sentence breaks. Tunable via [mumble_stt] eou_silence_ms.
@@ -50,6 +57,13 @@ class SidecarConfig:
     att_context: str          # latency profile label ("default" -> [70, 1])
     log_level: str            # "debug" | "info" | "warning" | "error"
     eou_silence_ms: int       # trailing silence before a FINAL commits
+    device: str               # "cuda" | "cpu"
+    vocab_biasing_enabled: bool
+    vocab_file: str           # resolved absolute path to shared vocab.txt
+    vocab_biasing_context_score: float
+    vocab_biasing_depth_scaling: float
+    vocab_biasing_alpha: float
+    vocab_biasing_max_phrases: int
 
     @property
     def att_context_size(self) -> list[int]:
@@ -72,6 +86,11 @@ class SidecarConfig:
                 pass
         return [70, 1]
 
+    @property
+    def compute_dtype(self) -> str:
+        """Use the efficient native dtype for the selected inference device."""
+        return "bfloat16" if self.device == "cuda" else "float32"
+
 
 def _resolve_socket_path(raw_value: Optional[str]) -> str:
     """Resolve the socket path, expanding %t / $XDG_RUNTIME_DIR conventions.
@@ -87,6 +106,13 @@ def _resolve_socket_path(raw_value: Optional[str]) -> str:
     value = raw_value.replace("%t", runtime_dir)
     value = os.path.expanduser(os.path.expandvars(value))
     return value
+
+
+def _resolve_vocab_path(raw_value: str, config_dir: Path) -> str:
+    value = Path(os.path.expanduser(os.path.expandvars(raw_value)))
+    if not value.is_absolute():
+        value = config_dir / value
+    return str(value.resolve())
 
 
 def load_sidecar_config(config_path: Optional[str] = None) -> SidecarConfig:
@@ -105,6 +131,44 @@ def load_sidecar_config(config_path: Optional[str] = None) -> SidecarConfig:
     if not isinstance(section, dict):
         section = {}
 
+    device = str(section.get("device", DEFAULT_DEVICE)).strip().lower()
+    if device not in {"cuda", "cpu"}:
+        raise ValueError(
+            f"invalid [mumble_stt].device {device!r}; expected 'cuda' or 'cpu'"
+        )
+
+    # Reuse [paths].vocab_file by default so Whisper and Nemotron have one
+    # vocabulary. A sidecar-specific override remains useful for experiments.
+    paths_section = raw.get("paths", {})
+    if not isinstance(paths_section, dict):
+        paths_section = {}
+    vocab_file = str(
+        section.get(
+            "vocab_file", paths_section.get("vocab_file", DEFAULT_VOCAB_FILE)
+        )
+    )
+    vocab_max = int(
+        section.get("vocab_biasing_max_phrases", DEFAULT_VOCAB_BIASING_MAX_PHRASES)
+    )
+    if vocab_max < 1:
+        raise ValueError("[mumble_stt].vocab_biasing_max_phrases must be at least 1")
+
+    vocab_context_score = float(
+        section.get(
+            "vocab_biasing_context_score", DEFAULT_VOCAB_BIASING_CONTEXT_SCORE
+        )
+    )
+    vocab_depth_scaling = float(
+        section.get(
+            "vocab_biasing_depth_scaling", DEFAULT_VOCAB_BIASING_DEPTH_SCALING
+        )
+    )
+    vocab_alpha = float(
+        section.get("vocab_biasing_alpha", DEFAULT_VOCAB_BIASING_ALPHA)
+    )
+    if vocab_context_score < 0 or vocab_depth_scaling < 0 or vocab_alpha < 0:
+        raise ValueError("[mumble_stt] vocabulary biasing scores must be non-negative")
+
     return SidecarConfig(
         socket_path=_resolve_socket_path(section.get("socket_path")),
         model=section.get("model", DEFAULT_MODEL),
@@ -113,4 +177,13 @@ def load_sidecar_config(config_path: Optional[str] = None) -> SidecarConfig:
         att_context=section.get("att_context", DEFAULT_ATT_CONTEXT),
         log_level=section.get("log_level", DEFAULT_LOG_LEVEL),
         eou_silence_ms=int(section.get("eou_silence_ms", DEFAULT_EOU_SILENCE_MS)),
+        device=device,
+        vocab_biasing_enabled=bool(
+            section.get("vocab_biasing_enabled", DEFAULT_VOCAB_BIASING_ENABLED)
+        ),
+        vocab_file=_resolve_vocab_path(vocab_file, path.parent),
+        vocab_biasing_context_score=vocab_context_score,
+        vocab_biasing_depth_scaling=vocab_depth_scaling,
+        vocab_biasing_alpha=vocab_alpha,
+        vocab_biasing_max_phrases=vocab_max,
     )

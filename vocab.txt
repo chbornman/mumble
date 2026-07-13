@@ -85,3 +85,26 @@ stdin, stdout, stderr, pipe, redirect
 
 # Whisper-specific
 whisper, whisper.cpp, transcribe, transcription, speech-to-text
+
+# Caleb's active stack and projects
+# Keep this personalized section at the end: whisper.cpp limits the initial
+# prompt to half of the text context and favors the most recent prompt tokens.
+GGUF, GGML, ONNX, TensorRT
+CUDA, Vulkan, ROCm, ComfyUI, FLUX, Detectron2, YOLO, Segment Anything, Modal
+Tailwind CSS, TanStack Query, TanStack Router, Radix UI, shadcn/ui, Clerk
+Better Auth, Payload CMS, Appwrite, Supabase, Tauri, Axum, Tokio, Serde, SQLx
+Alembic, Pydantic, Frigate, Jellyfin, Authentik, Vaultwarden
+Paperless-ngx, Home Assistant, Mosquitto, Forgejo, Pi-hole, ZFS, btrfs
+Syncthing, Sunshine, Moonlight, PipeWire, WirePlumber, Hypridle, Hyprlock
+Yazi, AstroNvim, Lazy.nvim, ESP32, ESP-IDF, ESPHome, STM32, Klipper
+OpenSCAD, JUCE, OrcaSlicer, Wacom, Darktable
+NVIDIA, AMD, GeForce, Radeon, RTX 5080, GTX 1080 Ti, Ryzen 9 9900X
+Radeon Pro V620, RDNA2, Blackwell, Pascal, NVENC, NVDEC, VRAM, DRAM
+FP4, MXFP4, MTP, multi-token prediction, MoE, mixture of experts
+Ornith-1.0, Qwen, Gemma, Ollama, llama-server, self-speculative decoding
+Focusrite, Scarlett 2i2, FireWire, Digital8, Wyoming Whisper, Piper
+Capstan Cloud, CollabFrame, PhotoProof, Retina, Mophics, Steadfirm, ToneStack
+Pavo, WeldCount, ParkingPercent, PhotoJam, Storybooth, WareWalk, VisualFlow
+Pieces to Pounds, Rosalie, SonyTagger, FamilyTales, CalebSpec
+Codex, Hugging Face, Nemotron, NeMo, llama.cpp, Immich
+bornmanserver, Margo, fridge, think, asahi, mbp

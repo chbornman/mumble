@@ -13,8 +13,6 @@ import logging
 import re
 import subprocess
 import sys
-from pathlib import Path
-
 import constants
 from config_loader import load_config
 from whisper_daemon import StreamDeduplicator

@@ -54,11 +54,20 @@ class StreamingEngine:
     """Holds the NeMo model resident and runs cache-aware streaming inference."""
 
     def __init__(self, model_name: str, att_context_size: list[int],
-                 sample_rate: int = 16000, eou_silence_ms: int = 800):
+                 sample_rate: int = 16000, eou_silence_ms: int = 800,
+                 device: str = "cuda", vocab_phrases: Optional[list[str]] = None,
+                 vocab_biasing_context_score: float = 1.0,
+                 vocab_biasing_depth_scaling: float = 2.0,
+                 vocab_biasing_alpha: float = 1.0):
         self.model_name = model_name
         self.att_context_size = att_context_size
         self.sample_rate = sample_rate
         self.eou_silence_ms = eou_silence_ms
+        self.requested_device = device
+        self.vocab_phrases = list(vocab_phrases or [])
+        self.vocab_biasing_context_score = vocab_biasing_context_score
+        self.vocab_biasing_depth_scaling = vocab_biasing_depth_scaling
+        self.vocab_biasing_alpha = vocab_biasing_alpha
 
         # Set during load().
         self._pipeline = None
@@ -79,7 +88,7 @@ class StreamingEngine:
 
     # --- model load / warmup ------------------------------------------------
     def load(self) -> None:
-        """Import NeMo, build the pipeline once, and warm the CUDA kernels.
+        """Import NeMo, build the pipeline once, and warm the inference backend.
 
         Raises on failure; the server maps that to ERROR{code="model_load"}
         and exits non-zero so systemd Restart kicks in.
@@ -103,6 +112,16 @@ class StreamingEngine:
 
         log.info("building cache-aware pipeline for %s (att_context=%s)",
                  self.model_name, self.att_context_size)
+        if self.vocab_phrases:
+            log.info(
+                "enabling RNNT vocabulary biasing with %d phrases "
+                "(context_score=%g, depth_scaling=%g, alpha=%g, triton=%s)",
+                len(self.vocab_phrases),
+                self.vocab_biasing_context_score,
+                self.vocab_biasing_depth_scaling,
+                self.vocab_biasing_alpha,
+                self.requested_device == "cuda",
+            )
         cfg = OmegaConf.create(self._build_cfg())
         self._pipeline = PipelineBuilder.build_pipeline(cfg)
         self._device = self._pipeline.device
@@ -126,6 +145,25 @@ class StreamingEngine:
         streaming.chunk_size_in_secs (lets the pipeline derive the native
         160ms chunk and keeps tokens_per_frame consistent).
         """
+        greedy_cfg = {"max_symbols": 10, "loop_labels": True}
+        if self.vocab_phrases:
+            # Static vocabulary is decoder-wide, so the global fusion model is
+            # a better fit than NeMo's per-request biasing hook (which is not
+            # integrated by CacheAwareRNNTPipeline in NeMo 2.7). It naturally
+            # survives EOU resets and applies to every frame. On CPU, forcing
+            # the PyTorch implementation is essential: Triton can be installed
+            # even when CUDA is unavailable.
+            greedy_cfg.update({
+                "use_cuda_graph_decoder": self.requested_device == "cuda",
+                "boosting_tree": {
+                    "key_phrases_list": self.vocab_phrases,
+                    "context_score": self.vocab_biasing_context_score,
+                    "depth_scaling": self.vocab_biasing_depth_scaling,
+                    "use_triton": self.requested_device == "cuda",
+                },
+                "boosting_tree_alpha": self.vocab_biasing_alpha,
+            })
+
         return {
             "pipeline_type": "cache_aware",
             "asr_decoding_type": "rnnt",
@@ -140,9 +178,11 @@ class StreamingEngine:
             "return_tail_result": True,  # flush trailing partial as final at end
             "asr": {
                 "model_name": self.model_name,
-                "device": "cuda",
-                "device_id": 0,
-                "compute_dtype": "bfloat16",
+                "device": self.requested_device,
+                "device_id": 0 if self.requested_device == "cuda" else None,
+                "compute_dtype": (
+                    "bfloat16" if self.requested_device == "cuda" else "float32"
+                ),
                 "use_amp": False,
                 "decoding": {
                     # The batched loop_labels greedy decoder restores BOTH
@@ -150,7 +190,7 @@ class StreamingEngine:
                     # the non-batched path resets timestamp=[] each chunk and
                     # crashes with IndexError. Keep the batched path.
                     "strategy": "greedy_batch",
-                    "greedy": {"max_symbols": 10, "loop_labels": True},
+                    "greedy": greedy_cfg,
                 },
             },
             "streaming": {
@@ -189,7 +229,7 @@ class StreamingEngine:
 
     def _warmup(self) -> None:
         """Run one dummy silence frame so the first real chunk isn't skewed by
-        CUDA kernel/graph warmup."""
+        backend kernel/graph warmup."""
         torch = self._torch
         n = self._chunk_samples
         self._pipeline.open_session()

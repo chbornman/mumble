@@ -113,7 +113,8 @@ whisper.cpp does (CPU/Vulkan, no CUDA), and as the fallback
 ### 4. The Nemotron sidecar (`mumble_stt/`)
 
 Nemotron runs on **NeMo + PyTorch**, which is multi-GB and pins its own CUDA
-torch — it **cannot** share mumble's lightweight venv. So it runs as its own
+torch — it **cannot** share mumble's lightweight venv. It can run inference on
+CUDA or stay resident in system DRAM and run on CPU. So it runs as its own
 long-lived process (`mumble-stt.service`) in a dedicated venv
 (see [`mumble_stt/requirements.txt`](mumble_stt/requirements.txt)), holding the
 model resident and speaking a small framed protocol over a unix socket. The
@@ -125,6 +126,17 @@ It is still **part of mumble**: same repo, same installer (opt-in extra,
 because of its weight), checked by `mumble doctor`. "Sidecar" is a deployment
 detail, not a separate project — it also means the heavy ASR could run on a
 different machine later without touching the daemon.
+
+`[mumble_stt].device = "cuda" | "cpu"` controls model placement. CUDA uses the
+native bfloat16 path; CPU uses float32. CPU residency trades throughput for
+free VRAM and can still keep up with live dictation on a sufficiently fast
+host. An earlier direct-engine, loaded-model measurement processed 11.0 seconds
+of audio in 7.087 seconds on CPU versus 0.652 seconds on CUDA (10.9x slower,
+1.55x real-time throughput on CPU). Its paced direct-engine run had a 156 ms
+post-audio tail. The CPU process held about 5.6 GB in DRAM and no idle VRAM.
+These figures exclude some end-to-end sidecar overhead reported in the
+vocabulary A/B below. Treat them as one-host observations, not a
+hardware-independent performance promise.
 
 | File | Role |
 |---|---|
@@ -230,6 +242,11 @@ The daemon sends FLUSH, waits briefly for the matching FINAL, then BYE.
   up with your voice; costs occasional visible corrections when the model
   revises a word retroactively.
 
+Those visible corrections are ASR hypothesis revisions. They occur with LLM
+cleanup disabled and must not be described or debugged as LLM rewriting. Use
+`finals` mode when stable phrase-at-a-time insertion matters more than seeing
+the partial transcript.
+
 ### 7. LLM cleanup — optional, off by default
 
 Fully implemented (`llm_postprocess.py`, glossary, per-app context via
@@ -261,6 +278,47 @@ component reads config; nothing hardcodes paths. The sidecar reads its
 `[mumble_stt]` table from the *same* file (`mumble_stt/config.py`), so there is
 one control plane. Internal non-tunable values live in `constants.py` — no
 magic numbers in the logic.
+
+### 10. Vocabulary and glossary paths
+
+`vocab.txt` is one source with three purpose-specific projections:
+
+- The batch whisper.cpp path uses `glossary.py` to build the `--prompt` initial
+  prompt from literals and both sides of correction mappings. It deduplicates
+  case-insensitively and selects a whole-term suffix within an 896-character
+  budget, so later user/project entries take priority. The daemon and
+  `benchmark.py` call the same formatter.
+- When `[llm_postprocess].enabled = true`, the same parser supplies literals,
+  deterministic mappings, and quoted instructions to the cleanup layer. This
+  Wispr-like cleanup remains an optional, post-recognition batch stage and is
+  disabled by default.
+- With `[mumble_stt].vocab_biasing_enabled = true`,
+  `mumble_stt/vocabulary.py` supplies Nemotron's decoder with literals plus
+  mapping destinations. It deliberately excludes the frequently misheard
+  mapping sources and LLM-only rules.
+
+Nemotron uses NeMo's decoder-wide RNNT boosting tree, not its per-request
+biasing hook. The phrase model is constructed with the pipeline at sidecar
+startup, applies to all frames, and persists across end-of-utterance state
+resets. CPU mode forces the PyTorch boosting implementation
+(`use_triton=false`) and disables CUDA graph decoding; CUDA mode may use both.
+The controls are context score, depth scaling, fusion alpha, and a maximum
+phrase count. Changing the vocabulary or controls requires a sidecar restart.
+
+The live CPU smoke used a 371-phrase snapshot; the subsequently expanded file
+currently resolves to 407 phrases. The test proved that the global tree loads
+and transcribes, but it did not establish an accuracy benefit. In an A/B run on
+the same 11-second Alice sample, both configurations returned identical text:
+
+| CPU configuration | End-to-end time | Throughput | Paced post-audio tail |
+|---|---:|---:|---:|
+| Bias disabled | 11.322 s | 0.972x real time | 1.024 s |
+| Bias enabled | 11.923 s | 0.923x real time | 1.476 s |
+
+The feature therefore remains opt-in and disabled in the active local config
+until representative user speech can measure technical-term recall and
+false-positive over-biasing. The deterministic final-text mapping fallback is
+still parked rather than layering a second correction mechanism prematurely.
 
 ## Install & operate
 

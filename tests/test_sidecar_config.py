@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 from mumble_stt.config import (
     DEFAULT_EOU_SILENCE_MS,
+    DEFAULT_DEVICE,
     DEFAULT_VENV_PYTHON,
+    DEFAULT_VOCAB_BIASING_ENABLED,
     SidecarConfig,
     load_sidecar_config,
 )
@@ -50,6 +52,11 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(cfg.sample_rate, 16000)
         self.assertEqual(cfg.venv_python, DEFAULT_VENV_PYTHON)
         self.assertEqual(cfg.eou_silence_ms, DEFAULT_EOU_SILENCE_MS)
+        self.assertEqual(cfg.device, DEFAULT_DEVICE)
+        self.assertEqual(cfg.compute_dtype, "bfloat16")
+        self.assertEqual(cfg.vocab_biasing_enabled, DEFAULT_VOCAB_BIASING_ENABLED)
+        self.assertEqual(cfg.vocab_file, str(Path(td) / "vocab.txt"))
+        self.assertEqual(cfg.vocab_biasing_max_phrases, 1024)
 
     def test_socket_path_defaults_to_runtime_dir(self):
         with tempfile.TemporaryDirectory() as td:
@@ -66,6 +73,13 @@ model = "other/model"
 sample_rate = 8000
 venv_python = "/opt/stt/bin/python"
 eou_silence_ms = 500
+device = "cpu"
+vocab_biasing_enabled = true
+vocab_file = "terms.txt"
+vocab_biasing_context_score = 0.75
+vocab_biasing_depth_scaling = 1.5
+vocab_biasing_alpha = 0.5
+vocab_biasing_max_phrases = 99
 socket_path = "%t/custom.sock"
 """
         with tempfile.TemporaryDirectory() as td:
@@ -75,6 +89,14 @@ socket_path = "%t/custom.sock"
         self.assertEqual(cfg.sample_rate, 8000)
         self.assertEqual(cfg.venv_python, "/opt/stt/bin/python")
         self.assertEqual(cfg.eou_silence_ms, 500)
+        self.assertEqual(cfg.device, "cpu")
+        self.assertEqual(cfg.compute_dtype, "float32")
+        self.assertTrue(cfg.vocab_biasing_enabled)
+        self.assertEqual(cfg.vocab_file, str(Path(td) / "terms.txt"))
+        self.assertEqual(cfg.vocab_biasing_context_score, 0.75)
+        self.assertEqual(cfg.vocab_biasing_depth_scaling, 1.5)
+        self.assertEqual(cfg.vocab_biasing_alpha, 0.5)
+        self.assertEqual(cfg.vocab_biasing_max_phrases, 99)
         self.assertEqual(cfg.socket_path, "/run/user/42/custom.sock")
 
     def test_config_local_merges_over_main(self):
@@ -86,6 +108,15 @@ venv_python = "/local/override/python"
             cfg = load_sidecar_config(write_config(td, MINIMAL_TOML, local))
         self.assertEqual(cfg.venv_python, "/local/override/python")
 
+    def test_invalid_device_is_rejected(self):
+        local = """
+[mumble_stt]
+device = "vulkan"
+"""
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(ValueError, "expected 'cuda' or 'cpu'"):
+                load_sidecar_config(write_config(td, MINIMAL_TOML, local))
+
 
 class TestAttContext(unittest.TestCase):
     def cfg(self, label):
@@ -93,6 +124,13 @@ class TestAttContext(unittest.TestCase):
             socket_path="/tmp/x.sock", model="m", sample_rate=16000,
             venv_python="py", att_context=label, log_level="info",
             eou_silence_ms=800,
+            device="cuda",
+            vocab_biasing_enabled=False,
+            vocab_file="/tmp/vocab.txt",
+            vocab_biasing_context_score=1.0,
+            vocab_biasing_depth_scaling=2.0,
+            vocab_biasing_alpha=1.0,
+            vocab_biasing_max_phrases=1024,
         )
 
     def test_default_label_maps_to_low_latency(self):

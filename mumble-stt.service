@@ -1,6 +1,6 @@
 [Unit]
 Description=mumble-stt - Nemotron streaming ASR sidecar (heavy NeMo/PyTorch engine for mumble)
-# Heavy GPU model; only meaningful once the graphical/user session is up.
+# Heavy resident ASR model; only meaningful once the graphical/user session is up.
 After=graphical-session.target
 
 [Service]
@@ -20,8 +20,8 @@ TimeoutStartSec=180
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 # Model weights download to / load from the standard HF cache.
 Environment=HF_HOME=%h/.cache/huggingface
-# Pin the sidecar to one GPU. On multi-GPU machines, set this to the device
-# you want the ASR model on.
+# Pin CUDA mode to one GPU. This is harmless in CPU mode; on multi-GPU machines,
+# set it to the device you want the ASR model on.
 Environment=CUDA_VISIBLE_DEVICES=0
 # Avoid CPU oversubscription from torch/OMP fighting the rest of the desktop.
 Environment=OMP_NUM_THREADS=4

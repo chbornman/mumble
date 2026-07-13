@@ -6,7 +6,7 @@ transcript to a local OpenAI-compatible chat-completions endpoint
 (llama.cpp server, Ollama, LM Studio, vLLM all expose this shape) to remove
 fillers, resolve self-corrections, and restore punctuation.
 
-Streaming + LLM is deliberately out of scope (see TODO.md #1 — pipeline
+Streaming + LLM is deliberately out of scope (see TODO.md — pipeline
 latency rises from <1s to 5-10s combined).
 
 Feature-flag: `llm_postprocess.enabled` in config.toml (default False).

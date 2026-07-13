@@ -15,11 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from glossary import Glossary
 from llm_postprocess import (
-    BASE_SYSTEM_PROMPT,
     COMMAND_SYSTEM_PROMPT,
     EMPTY_SENTINEL,
     LLMPostProcessor,
-    PostprocessOutcome,
     build_system_prompt,
     interpret_llm_output,
 )
