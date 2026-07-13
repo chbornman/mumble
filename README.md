@@ -277,8 +277,8 @@ model per request (low memory), `server` keeps it resident via `whisper-server`
 
 ### Vocabulary behavior
 
-`[paths].vocab_file` points to the shared `vocab.txt` source. Its consumers use
-it differently:
+`[paths].vocab_file` points to the broad `vocab.txt` source used by batch
+dictation. Its consumers use it differently:
 
 - Batch whisper.cpp gets a case-insensitively deduplicated initial prompt,
   bounded to 896 characters. Later entries win when the list is too long, so
@@ -286,10 +286,12 @@ it differently:
   the prompt through the same path as the daemon.
 - The optional LLM cleanup path parses literals, correction mappings, and
   quoted rules into a structured glossary when that feature is enabled.
-- Nemotron can opt into an experimental decoder-level RNNT boosting tree with
-  `[mumble_stt].vocab_biasing_enabled = true`. It uses literal entries and the
-  intended destination of mappings, not commonly misheard mapping sources or
-  free-form LLM rules. The committed default is `false`.
+- Nemotron can opt into a decoder-level RNNT boosting tree with
+  `[mumble_stt].vocab_biasing_enabled = true`. Its separate default
+  `vocab.streaming.txt` is a curated 77-phrase priority list, avoiding the
+  overhead and false-positive surface of feeding the 407-phrase batch glossary
+  into every streaming frame. The committed feature default remains `false`;
+  margo enables the compact list in `config.local.toml`.
 
 Nemotron biasing is static and global for the loaded sidecar: the phrase tree is
 built at startup, applies to every streaming frame, and survives utterance
@@ -297,14 +299,32 @@ resets. Restart `mumble-stt.service` after changing the vocabulary or its bias
 settings. On CPU it uses the PyTorch implementation with Triton and CUDA graph
 decoding disabled.
 
-The live CPU smoke used a 371-phrase snapshot; the subsequently expanded file
-currently resolves to 407 phrases. That load test is not an accuracy result. On
+The original live CPU smoke used a 371-phrase snapshot; the broad file now
+resolves to 407 phrases. That load test is not an accuracy result. On
 the same 11-second sample, biasing produced the identical
 transcript both ways. Bias off took 11.322 seconds end to end (0.972x real-time
 throughput) with a 1.024-second paced post-audio tail; bias on took 11.923
 seconds (0.923x) with a 1.476-second tail. Keep it disabled until representative
 user speech demonstrates better technical-term recall without unacceptable
-over-biasing.
+over-biasing. The compact list reduces the scope substantially, but its term
+recall still needs representative user speech before tuning the bias strength.
+
+### Streaming silence gate
+
+`[nemotron].vad_enabled = true` runs the bundled Silero VAD v5 model in the
+light daemon on CPU. It follows the PhotoProof capture design: retain one second
+of pre-roll, ship speech plus a 15-window hysteresis hang, then ship three more
+seconds of silence so Nemotron can own endpointing and emit a FINAL. Only long
+idle silence is withheld, which lets the resident CPU model stop consuming
+roughly four cores between utterances. Initialization and inference errors fail
+open, so VAD failure sends all audio instead of losing dictation.
+
+Silero requires 512-sample windows at 16 kHz and a subtle 64-sample context
+prefix (`[1, 576]` ONNX input); omitting that prefix silently produces near-zero
+speech probabilities. The implementation preserves that context. A local
+11.625-second speech-plus-silence smoke detected one start and one end, shipped
+10.3 seconds, and spent 17.3 ms total in VAD inference (0.15% of audio duration).
+Longer quiet periods are almost entirely withheld after the trailing window.
 
 A few common settings:
 

@@ -1,0 +1,84 @@
+# Compact, high-priority vocabulary for always-on Nemotron streaming.
+# Keep this deliberately selective: decoder biasing applies on every frame.
+
+# Speech / local AI
+Immich
+Mumble
+Nemotron
+NeMo
+Whisper
+whisper.cpp
+llama.cpp
+Codex
+Hugging Face
+Ollama
+ComfyUI
+FLUX
+Qwen
+Gemma
+Ornith-1.0
+GGUF
+ONNX
+PyTorch
+CUDA
+Vulkan
+ROCm
+TensorRT
+NVIDIA
+AMD
+GeForce
+Radeon
+RTX 5080
+GTX 1080 Ti
+Radeon Pro V620
+Ryzen 9 9900X
+VRAM
+DRAM
+FP4
+MXFP4
+MTP
+multi-token prediction
+MoE
+
+# Active projects and machines
+PhotoProof
+CollabFrame
+Capstan Cloud
+Mophics
+Steadfirm
+ToneStack
+Pavo
+WeldCount
+ParkingPercent
+PhotoJam
+Storybooth
+WareWalk
+VisualFlow
+Pieces to Pounds
+Rosalie
+SonyTagger
+FamilyTales
+CalebSpec
+bornmanserver
+Margo
+fridge
+
+# Frequent stack terms that speech models commonly mangle
+Hyprland
+Wayland
+systemd
+PipeWire
+WirePlumber
+Tauri
+Axum
+Tokio
+Serde
+SQLx
+TanStack
+shadcn/ui
+Paperless-ngx
+Home Assistant
+Vaultwarden
+OpenSCAD
+OrcaSlicer
+ESPHome

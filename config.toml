@@ -274,6 +274,18 @@ inject_mode = "finals"
 # stays low-risk because a dead sidecar degrades to a working keybind.
 legacy_fallback = true
 
+# Optional client-side Silero VAD. When enabled, Mumble sends one second of
+# pre-roll, all detected speech, and three seconds of trailing audio, then
+# withholds sustained silence. Nemotron remains the endpoint authority; this
+# only reduces idle CPU work. Any VAD initialization/runtime fault fails open.
+vad_enabled = false
+vad_model = "assets/silero_vad.onnx"
+vad_enter = 0.5
+vad_exit = 0.35
+vad_hang_windows = 15
+vad_pre_roll_ms = 1000
+vad_trailing_ms = 3000
+
 [mumble_stt]
 # The Nemotron streaming sidecar (the heavy NeMo process). The daemon and the
 # sidecar read this SAME file — these keys configure the sidecar. Changes here
@@ -302,15 +314,17 @@ att_context = "default"
 # "snappiness" knob for finals mode.
 eou_silence_ms = 800
 
-# Experimental decoder-level context biasing from the same vocab.txt used by
-# press-to-talk Whisper. This uses NeMo's global RNNT boosting tree, so it
+# Experimental decoder-level context biasing. Use the compact streaming list
+# below rather than the broad press-to-talk glossary: this uses NeMo's global
+# RNNT boosting tree, so it
 # applies to every streaming frame and persists across end-of-utterance resets.
 # Keep disabled until a CPU live-audio smoke test confirms acceptable latency
 # and false-positive behavior on this model/NeMo version.
 vocab_biasing_enabled = false
 
-# Optional sidecar-specific path; omitted means [paths].vocab_file above.
-# vocab_file = "vocab.txt"
+# Sidecar-specific high-priority list. Batch Whisper continues to use the much
+# broader [paths].vocab_file independently.
+vocab_file = "vocab.streaming.txt"
 
 # Bias strength controls. Higher values favor vocabulary phrases more strongly
 # but can hallucinate technical terms over ordinary speech. Start conservative.

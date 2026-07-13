@@ -45,6 +45,7 @@ from glossary import (
 )
 from llm_postprocess import LLMPostProcessor
 from modes import available_modes, resolve_mode_block, resolve_mode_for_app
+from stream_vad import SileroVad, StreamingVadGate
 
 try:
     import requests
@@ -810,6 +811,37 @@ class WhisperDaemon:
         sample_rate = self.config.audio.sample_rate
         channels = self.config.audio.channels
         audio_q: queue.Queue = queue.Queue()
+        gate = None
+        captured_bytes = 0
+        sent_bytes = 0
+        if self.config.nemotron.vad_enabled:
+            try:
+                if sample_rate != 16000 or channels != 1:
+                    raise RuntimeError(
+                        "Silero VAD requires 16 kHz mono capture "
+                        f"(configured: {sample_rate} Hz, {channels} channels)"
+                    )
+                detector = SileroVad(
+                    self.config.nemotron.vad_model,
+                    enter=self.config.nemotron.vad_enter,
+                    exit=self.config.nemotron.vad_exit,
+                    hang_windows=self.config.nemotron.vad_hang_windows,
+                )
+                gate = StreamingVadGate(
+                    detector,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    pre_roll_ms=self.config.nemotron.vad_pre_roll_ms,
+                    trailing_ms=self.config.nemotron.vad_trailing_ms,
+                )
+                self.logger.info(
+                    "Streaming Silero VAD enabled "
+                    f"(pre-roll={self.config.nemotron.vad_pre_roll_ms} ms, "
+                    f"trailing={self.config.nemotron.vad_trailing_ms} ms)"
+                )
+            except Exception as e:
+                # Fail open: a missing/broken optimization must not lose speech.
+                self.logger.error(f"Streaming VAD unavailable; sending all audio: {e}")
 
         def audio_callback(indata, frames, time_info, status):
             if status:
@@ -831,12 +863,32 @@ class WhisperDaemon:
                     except queue.Empty:
                         continue
                     try:
-                        self._send_frame(sock, self._ST_AUDIO, chunk.tobytes())
+                        pcm = chunk.tobytes()
+                        captured_bytes += len(pcm)
+                        outgoing = gate.feed(pcm) if gate is not None else [pcm]
+                        for payload in outgoing:
+                            self._send_frame(sock, self._ST_AUDIO, payload)
+                            sent_bytes += len(payload)
+                        if gate is not None and gate.failed:
+                            self.logger.error(
+                                "Streaming VAD failed during capture; gate is now fail-open"
+                            )
+                            gate = None
                     except OSError as e:
                         self.logger.debug(f"Audio send stopped (socket gone): {e}")
                         break
         except Exception as e:
             self.logger.error(f"Streaming audio capture error: {e}")
+        finally:
+            if self.config.nemotron.vad_enabled:
+                seconds_sent = sent_bytes / max(1, sample_rate * channels * 2)
+                seconds_withheld = max(0, captured_bytes - sent_bytes) / max(
+                    1, sample_rate * channels * 2
+                )
+                self.logger.info(
+                    f"Streaming VAD audio: sent {seconds_sent:.1f}s, "
+                    f"withheld {seconds_withheld:.1f}s of sustained silence"
+                )
 
     def _nemotron_reader_loop(self, sock: socket.socket):
         """Read sidecar->daemon frames; inject FINALs (and PARTIALs if enabled).

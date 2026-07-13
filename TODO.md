@@ -19,16 +19,22 @@ threshold, voice command mode, and legacy stream dedup) has shipped. See
   text with biasing off and on. Off took 11.322 seconds end to end with a 1.024
   second paced tail; on took 11.923 seconds with a 1.476 second paced tail.
   This validates operation and quantifies overhead, not recognition quality.
+- **Split streaming vocabulary.** Nemotron now uses a curated 77-phrase
+  `vocab.streaming.txt`; batch Whisper retains the 407-phrase broad glossary.
+  Margo enables native biasing with the compact list.
+- **PhotoProof-style silence gate.** The daemon now runs Silero VAD v5 with its
+  required 64-sample context, one-second pre-roll, hysteresis, and three-second
+  trailing ship window. A real speech smoke detected onset and end while VAD
+  compute consumed 0.15% of audio duration. Failures send all audio.
 
 ## Current priority
 
 ### Validate and tune Nemotron vocabulary biasing
 
-Keep the feature disabled by default until representative speech shows a real
-technical-term accuracy gain without excessive ordinary-word substitutions.
-The next useful evidence is term recall plus negative/over-bias cases across
-several bias strengths. The speaker-specific recording corpus remains parked
-below because it requires user participation.
+Keep the public feature disabled by default. Margo is now dogfooding the compact
+list; the next useful evidence is term recall plus negative/over-bias cases
+across several bias strengths. The speaker-specific recording corpus remains
+parked below because it requires user participation.
 
 Per-project or per-application vocabulary profiles are also deferred until the
 single global vocabulary has measurable benefits that justify the extra

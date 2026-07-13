@@ -293,9 +293,9 @@ magic numbers in the logic.
   Wispr-like cleanup remains an optional, post-recognition batch stage and is
   disabled by default.
 - With `[mumble_stt].vocab_biasing_enabled = true`,
-  `mumble_stt/vocabulary.py` supplies Nemotron's decoder with literals plus
-  mapping destinations. It deliberately excludes the frequently misheard
-  mapping sources and LLM-only rules.
+  `mumble_stt/vocabulary.py` supplies Nemotron's decoder with the compact
+  `vocab.streaming.txt` priority list. This stays separate from the broad batch
+  glossary and deliberately excludes correction sources and LLM-only rules.
 
 Nemotron uses NeMo's decoder-wide RNNT boosting tree, not its per-request
 biasing hook. The phrase model is constructed with the pipeline at sidecar
@@ -305,8 +305,8 @@ resets. CPU mode forces the PyTorch boosting implementation
 The controls are context score, depth scaling, fusion alpha, and a maximum
 phrase count. Changing the vocabulary or controls requires a sidecar restart.
 
-The live CPU smoke used a 371-phrase snapshot; the subsequently expanded file
-currently resolves to 407 phrases. The test proved that the global tree loads
+The original live CPU smoke used a 371-phrase snapshot; the broad batch file
+now resolves to 407 phrases. The test proved that the global tree loads
 and transcribes, but it did not establish an accuracy benefit. In an A/B run on
 the same 11-second Alice sample, both configurations returned identical text:
 
@@ -315,10 +315,25 @@ the same 11-second Alice sample, both configurations returned identical text:
 | Bias disabled | 11.322 s | 0.972x real time | 1.024 s |
 | Bias enabled | 11.923 s | 0.923x real time | 1.476 s |
 
-The feature therefore remains opt-in and disabled in the active local config
-until representative user speech can measure technical-term recall and
-false-positive over-biasing. The deterministic final-text mapping fallback is
-still parked rather than layering a second correction mechanism prematurely.
+The public feature therefore remains opt-in. Margo now uses a curated 77-phrase
+streaming list, while representative user speech remains the accuracy gate for
+bias-strength tuning. The deterministic final-text mapping fallback is still
+parked rather than layering a second correction mechanism prematurely.
+
+### 11. Client-side VAD and silence gating
+
+When `[nemotron].vad_enabled` is true, `stream_vad.py` runs the bundled Silero
+VAD v5 ONNX model in the light daemon before AUDIO framing. It consumes 512
+samples per decision and explicitly prepends the previous window's last 64
+samples, matching Silero's `[1,576]` input contract.
+
+VAD owns onset gating, not segmentation. `StreamingVadGate` retains a bounded
+pre-roll while closed, flushes it ahead of the first speech chunk, ships the
+configured hysteresis hangover, and continues shipping trailing silence for
+three seconds. Nemotron therefore still receives enough silence for its 800 ms
+endpointer to commit FINALs. Sustained silence after that window is withheld,
+making the CPU sidecar idle without unloading its DRAM-resident model. A model,
+runtime, or inference error permanently fails the current stream open.
 
 ## Install & operate
 

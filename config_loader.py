@@ -172,6 +172,15 @@ class NemotronConfig:
     # "live"   = type the growing PARTIAL live, backspacing to correct revisions.
     inject_mode: str
     legacy_fallback: bool
+    # Optional client-side Silero gate. The sidecar still owns utterance
+    # endpointing; this only avoids feeding it sustained silence.
+    vad_enabled: bool
+    vad_model: Path
+    vad_enter: float
+    vad_exit: float
+    vad_hang_windows: int
+    vad_pre_roll_ms: int
+    vad_trailing_ms: int
 
 
 @dataclass
@@ -459,6 +468,17 @@ def load_config(config_path: Optional[str] = None) -> Config:
     # keeps older config.toml / config.local.toml files (without a [nemotron]
     # table) loading unchanged.
     nem_raw = raw.get("nemotron", {})
+    vad_enter = float(nem_raw.get("vad_enter", 0.5))
+    vad_exit = float(nem_raw.get("vad_exit", 0.35))
+    vad_hang_windows = int(nem_raw.get("vad_hang_windows", 15))
+    vad_pre_roll_ms = int(nem_raw.get("vad_pre_roll_ms", 1000))
+    vad_trailing_ms = int(nem_raw.get("vad_trailing_ms", 3000))
+    if not 0.0 <= vad_exit < vad_enter <= 1.0:
+        raise ValueError("[nemotron] VAD thresholds must satisfy 0 <= exit < enter <= 1")
+    if vad_hang_windows < 1:
+        raise ValueError("[nemotron].vad_hang_windows must be at least 1")
+    if vad_pre_roll_ms < 0 or vad_trailing_ms < 0:
+        raise ValueError("[nemotron] VAD pre-roll/trailing times cannot be negative")
     nemotron = NemotronConfig(
         socket_path=_resolve_runtime_socket(
             nem_raw.get("socket_path", "%t/mumble-stt.sock")
@@ -468,6 +488,15 @@ def load_config(config_path: Optional[str] = None) -> Config:
         connect_timeout=nem_raw.get("connect_timeout", 5.0),
         inject_mode=nem_raw.get("inject_mode", "finals"),
         legacy_fallback=nem_raw.get("legacy_fallback", True),
+        vad_enabled=nem_raw.get("vad_enabled", False),
+        vad_model=_expand_path(
+            nem_raw.get("vad_model", "assets/silero_vad.onnx"), project_dir
+        ),
+        vad_enter=vad_enter,
+        vad_exit=vad_exit,
+        vad_hang_windows=vad_hang_windows,
+        vad_pre_roll_ms=vad_pre_roll_ms,
+        vad_trailing_ms=vad_trailing_ms,
     )
 
     # Wayland
