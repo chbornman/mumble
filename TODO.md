@@ -19,7 +19,7 @@ threshold, voice command mode, and legacy stream dedup) has shipped. See
   text with biasing off and on. Off took 11.322 seconds end to end with a 1.024
   second paced tail; on took 11.923 seconds with a 1.476 second paced tail.
   This validates operation and quantifies overhead, not recognition quality.
-- **Split streaming vocabulary.** Nemotron now uses a curated 77-phrase
+- **Split streaming vocabulary.** Nemotron now uses a curated 76-phrase
   `vocab.streaming.txt`; batch Whisper retains the 407-phrase broad glossary.
   Margo enables native biasing with the compact list.
 - **PhotoProof-style silence gate.** The daemon now runs Silero VAD v5 with its

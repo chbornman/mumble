@@ -288,7 +288,7 @@ dictation. Its consumers use it differently:
   quoted rules into a structured glossary when that feature is enabled.
 - Nemotron can opt into a decoder-level RNNT boosting tree with
   `[mumble_stt].vocab_biasing_enabled = true`. Its separate default
-  `vocab.streaming.txt` is a curated 77-phrase priority list, avoiding the
+  `vocab.streaming.txt` is a curated 76-phrase priority list, avoiding the
   overhead and false-positive surface of feeding the 407-phrase batch glossary
   into every streaming frame. The committed feature default remains `false`;
   margo enables the compact list in `config.local.toml`.

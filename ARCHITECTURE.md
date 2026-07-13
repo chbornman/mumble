@@ -315,7 +315,7 @@ the same 11-second Alice sample, both configurations returned identical text:
 | Bias disabled | 11.322 s | 0.972x real time | 1.024 s |
 | Bias enabled | 11.923 s | 0.923x real time | 1.476 s |
 
-The public feature therefore remains opt-in. Margo now uses a curated 77-phrase
+The public feature therefore remains opt-in. Margo now uses a curated 76-phrase
 streaming list, while representative user speech remains the accuracy gate for
 bias-strength tuning. The deterministic final-text mapping fallback is still
 parked rather than layering a second correction mechanism prematurely.
