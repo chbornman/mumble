@@ -1222,19 +1222,30 @@ class WhisperDaemon:
             self.logger.warning(f"wl-paste selection capture failed: {e}")
         return ""
 
-    def _rms_dbfs(self, audio_data) -> float:
-        """RMS level of an int16 clip in dBFS (0 dBFS = full scale).
+    def _clip_rms_dbfs(self, audio_data) -> tuple[float, float]:
+        """(whole-clip RMS, loudest 100ms-window RMS) of an int16 clip, dBFS.
 
-        Returns -inf for a completely silent clip. Used by the pre-
-        transcription silence gate; see [transcription].min_rms_dbfs.
+        0 dBFS = full scale; -inf for a completely silent clip. The pre-
+        transcription silence gate acts on the max-window value: a short
+        utterance in a long clip drags the whole-clip average back down to
+        the room-noise floor, but any 100ms window containing real speech
+        still stands out. See [transcription].min_rms_dbfs.
         """
         samples = np.asarray(audio_data, dtype=np.float64).ravel()
         if samples.size == 0:
-            return float("-inf")
-        rms = float(np.sqrt(np.mean(samples ** 2)))
-        if rms <= 0.0:
-            return float("-inf")
-        return 20.0 * math.log10(rms / 32768.0)
+            return float("-inf"), float("-inf")
+        n = max(1, int(self.config.audio.sample_rate * 0.1))
+        pad = (-samples.size) % n
+        if pad:
+            samples = np.concatenate([samples, np.zeros(pad)])
+        windows = samples.reshape(-1, n)
+        window_rms = np.sqrt(np.mean(windows ** 2, axis=1))
+        clip_rms = float(np.sqrt(np.mean(windows ** 2)))
+
+        def dbfs(v: float) -> float:
+            return float("-inf") if v <= 0.0 else 20.0 * math.log10(v / 32768.0)
+
+        return dbfs(clip_rms), dbfs(float(window_rms.max()))
 
     def _transcribe_and_type(self, audio_data):
         """Transcribe audio and type the result."""
@@ -1243,16 +1254,20 @@ class WhisperDaemon:
 
         # Silence gate: a toggle with no speech records pure ambience, and
         # whisper-cli happily hallucinates on it ("C'mon, go ahead, go
-        # ahead..."). Skip the model entirely when the whole clip sits below
-        # the configured RMS floor. The per-clip RMS is always logged so the
-        # threshold can be tuned against the real noise floor of this mic.
+        # ahead..."). Skip the model entirely when no 100ms window in the
+        # clip reaches the configured RMS floor. Both RMS values are always
+        # logged so the floor can be tuned against this mic's real noise
+        # floor (and against real speech, should it ever get over-gated).
         min_dbfs = self.config.transcription.min_rms_dbfs
-        rms_dbfs = self._rms_dbfs(audio_data)
-        self.logger.info(f"Clip RMS: {rms_dbfs:.1f} dBFS (floor {min_dbfs:.1f})")
-        if rms_dbfs < min_dbfs:
+        clip_dbfs, peak_window_dbfs = self._clip_rms_dbfs(audio_data)
+        self.logger.info(
+            f"Clip RMS: {clip_dbfs:.1f} dBFS, peak 100ms window "
+            f"{peak_window_dbfs:.1f} dBFS (floor {min_dbfs:.1f})"
+        )
+        if peak_window_dbfs < min_dbfs:
             self.logger.info(
-                f"Silent clip ({rms_dbfs:.1f} dBFS < {min_dbfs:.1f}); "
-                "skipping transcription"
+                f"Silent clip (peak window {peak_window_dbfs:.1f} dBFS "
+                f"< {min_dbfs:.1f}); skipping transcription"
             )
             self._notify("No speech detected", urgency="critical")
             return

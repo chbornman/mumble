@@ -44,7 +44,7 @@ def make_daemon():
         audio=SimpleNamespace(sample_rate=16000),
         transcription=SimpleNamespace(
             clean_text=lambda t: t,
-            min_rms_dbfs=-50.0,
+            min_rms_dbfs=-25.0,
         ),
     )
     d.server_mode = False
@@ -80,6 +80,13 @@ def square_wave(amp: int, n: int) -> np.ndarray:
     return np.tile(np.array([amp, -amp], dtype=np.int16), n // 2)
 
 
+def room_noise_with_burst(n: int, quiet_amp: int, burst_amp: int) -> np.ndarray:
+    """n samples of quiet square-wave noise with one loud 100ms window."""
+    clip = square_wave(quiet_amp, n)
+    clip[24000:25600] = square_wave(burst_amp, 1600)
+    return clip
+
+
 class TestHasSpeechContent(unittest.TestCase):
     def test_punctuation_only_is_not_speech(self):
         for t in ("", ".", "...", ". . .", "??", "—"):
@@ -91,26 +98,41 @@ class TestHasSpeechContent(unittest.TestCase):
             self.assertTrue(has_speech_content(t), repr(t))
 
 
-class TestRmsDbfs(unittest.TestCase):
+class TestClipRmsDbfs(unittest.TestCase):
     def test_silence_is_minus_infinity(self):
         d = make_daemon()
         self.assertEqual(
-            d._rms_dbfs(np.zeros(16000, dtype=np.int16)), float("-inf"))
+            d._clip_rms_dbfs(np.zeros(16000, dtype=np.int16)),
+            (float("-inf"), float("-inf")))
         # 2-D (frames, channels) shape, as it arrives from the capture loop.
         self.assertEqual(
-            d._rms_dbfs(np.zeros((1600, 2), dtype=np.int16)), float("-inf"))
+            d._clip_rms_dbfs(np.zeros((1600, 2), dtype=np.int16)),
+            (float("-inf"), float("-inf")))
 
     def test_empty_clip_is_minus_infinity(self):
         d = make_daemon()
         self.assertEqual(
-            d._rms_dbfs(np.zeros(0, dtype=np.int16)), float("-inf"))
+            d._clip_rms_dbfs(np.zeros(0, dtype=np.int16)),
+            (float("-inf"), float("-inf")))
 
     def test_square_wave_level_is_exact(self):
         d = make_daemon()
         amp = 16000
-        got = d._rms_dbfs(square_wave(amp, 16000))
+        clip_dbfs, peak_dbfs = d._clip_rms_dbfs(square_wave(amp, 16000))
         want = 20.0 * math.log10(amp / 32768.0)
-        self.assertAlmostEqual(got, want, places=5)
+        self.assertAlmostEqual(clip_dbfs, want, places=5)
+        self.assertAlmostEqual(peak_dbfs, want, places=5)
+
+    def test_short_utterance_lifts_peak_but_not_clip(self):
+        d = make_daemon()
+        # 3s: room noise at -50.3 dBFS, one 100ms window of "speech" at
+        # -12.2 dBFS. The whole-clip average sinks back below the -25 floor;
+        # only the max-window metric sees the utterance.
+        clip = room_noise_with_burst(48000, 100, 8000)
+        clip_dbfs, peak_dbfs = d._clip_rms_dbfs(clip)
+        self.assertLess(clip_dbfs, -25.0)
+        self.assertGreater(peak_dbfs, -12.5)
+        self.assertLess(peak_dbfs, -12.0)
 
 
 class TestTranscribeAndTypeGate(unittest.TestCase):
@@ -124,10 +146,19 @@ class TestTranscribeAndTypeGate(unittest.TestCase):
 
     def test_clip_below_floor_is_gated(self):
         d = make_daemon()
-        # 100/32768 -> -50.3 dBFS: just under the -50.0 floor.
+        # 100/32768 -> -50.3 dBFS in every window: well under the -25 floor.
         d._transcribe_and_type(square_wave(100, 16000))
         self.assertEqual(d.transcribed, [])
         self.assertEqual(d.typed, [])
+
+    def test_short_utterance_in_long_clip_passes_gate(self):
+        d = make_daemon()
+        n = 48000  # 3s of room noise with one 100ms speech window
+        clip = square_wave(100, n)
+        clip[24000:25600] = square_wave(8000, 1600)
+        d._transcribe_and_type(clip)
+        self.assertEqual(len(d.transcribed), 1)
+        self.assertEqual(d.typed, ["Hello world."])
 
     def test_speech_level_clip_is_transcribed_and_typed(self):
         d = make_daemon()

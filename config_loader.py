@@ -120,9 +120,10 @@ class TranscriptionConfig:
     strip_leading_artifacts: bool
     strip_patterns: list[str]
     response_format: str
-    # Whole-clip RMS floor in dBFS (0 dBFS = full scale) for the pre-
-    # transcription silence gate. Recordings below it are dropped before the
-    # model runs, because whisper hallucinates on silence. Set very low
+    # RMS floor in dBFS (0 dBFS = full scale) for the pre-transcription
+    # silence gate. The gate compares the LOUDEST 100ms window of the clip
+    # against this floor; clips with no window above it are dropped before
+    # the model runs, because whisper hallucinates on silence. Set very low
     # (e.g. -120) to disable the gate.
     min_rms_dbfs: float
 

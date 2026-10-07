@@ -164,14 +164,14 @@ strip_patterns = [
 # Response format for server mode
 response_format = "json"
 
-# Silence gate: whole-clip RMS floor in dBFS (0 dBFS = full scale).
-# Recordings below this are dropped before transcription, because whisper
+# Silence gate: RMS floor in dBFS (0 dBFS = full scale). The gate compares
+# the LOUDEST 100ms window of the recording against this floor; a clip with
+# no window above it is dropped before transcription, because whisper
 # hallucinates on silence ("C'mon, go ahead, go ahead...", "and the other
-# one.", "..."). Real speech lifts a clip well above typical room noise;
-# the daemon logs each clip's RMS so you can tune this against your mic's
-# actual noise floor. Lower = less aggressive; set very low (e.g., -120) to
-# disable the gate.
-min_rms_dbfs = -50.0
+# one.", "..."). Tune it against the "Clip RMS" log line: it must sit above
+# your room-noise floor and below normal speech. Lower = less aggressive; set
+# very low (e.g., -120) to disable the gate.
+min_rms_dbfs = -25.0
 
 [streaming]
 # Streaming mode settings (whisper-stream binary)
