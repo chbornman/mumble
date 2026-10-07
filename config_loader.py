@@ -120,6 +120,11 @@ class TranscriptionConfig:
     strip_leading_artifacts: bool
     strip_patterns: list[str]
     response_format: str
+    # Whole-clip RMS floor in dBFS (0 dBFS = full scale) for the pre-
+    # transcription silence gate. Recordings below it are dropped before the
+    # model runs, because whisper hallucinates on silence. Set very low
+    # (e.g. -120) to disable the gate.
+    min_rms_dbfs: float
 
     def clean_text(self, text: str) -> str:
         """Strip leading artifacts from transcribed text."""
@@ -433,7 +438,11 @@ def load_config(config_path: Optional[str] = None) -> Config:
         strip_leading_artifacts=trans_raw["strip_leading_artifacts"],
         strip_patterns=trans_raw["strip_patterns"],
         response_format=trans_raw["response_format"],
+        min_rms_dbfs=float(trans_raw.get("min_rms_dbfs", -50.0)),
     )
+    if transcription.min_rms_dbfs > 0.0:
+        # 0 dBFS is full scale; a positive floor would drop every recording.
+        raise ValueError("[transcription].min_rms_dbfs must be <= 0 (dBFS)")
 
     # Streaming
     stream_raw = raw["streaming"]

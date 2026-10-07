@@ -10,6 +10,7 @@ All settings are driven by config.toml — no magic numbers.
 import argparse
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -66,6 +67,16 @@ def setup_logging(config: Config) -> logging.Logger:
         ],
     )
     return logging.getLogger("whisper_daemon")
+
+
+def has_speech_content(text: str) -> bool:
+    """True if the transcript contains at least one letter or digit.
+
+    Whisper-family models hallucinate on silent or near-silent audio. The
+    most visible artifacts are pure punctuation ("...", ".") or canned
+    phrases. A real dictation turn always has letters or digits, so a
+    transcript without them is noise to drop, never text to type."""
+    return any(c.isalnum() for c in text)
 
 
 class StreamDeduplicator:
@@ -995,7 +1006,9 @@ class WhisperDaemon:
         if not text:
             return
         cleaned = self.config.transcription.clean_text(text).strip()
-        if not cleaned:
+        # Punctuation-only finals are the streaming version of the same
+        # silence hallucination; dropping them here covers finals mode.
+        if not cleaned or not has_speech_content(cleaned):
             return
         self.logger.info(f"Stream FINAL: {cleaned[:60]}")
         self._type_text(cleaned + " ")
@@ -1021,6 +1034,10 @@ class WhisperDaemon:
         """Reconcile the in-progress partial to the FINAL, commit a separator,
         and reset for the next utterance (inject_mode=live)."""
         cleaned = self.config.transcription.clean_text(text).strip()
+        # A punctuation-only FINAL is a silence hallucination; treat it as
+        # empty so the on-screen partial is erased and nothing is committed.
+        if not has_speech_content(cleaned):
+            cleaned = ""
         # Reconcile whatever partial is on screen to the final text (this also
         # erases a partial that the model decided was noise: final == "").
         self._live_update(cleaned)
@@ -1205,10 +1222,40 @@ class WhisperDaemon:
             self.logger.warning(f"wl-paste selection capture failed: {e}")
         return ""
 
+    def _rms_dbfs(self, audio_data) -> float:
+        """RMS level of an int16 clip in dBFS (0 dBFS = full scale).
+
+        Returns -inf for a completely silent clip. Used by the pre-
+        transcription silence gate; see [transcription].min_rms_dbfs.
+        """
+        samples = np.asarray(audio_data, dtype=np.float64).ravel()
+        if samples.size == 0:
+            return float("-inf")
+        rms = float(np.sqrt(np.mean(samples ** 2)))
+        if rms <= 0.0:
+            return float("-inf")
+        return 20.0 * math.log10(rms / 32768.0)
+
     def _transcribe_and_type(self, audio_data):
         """Transcribe audio and type the result."""
         sample_rate = self.config.audio.sample_rate
         self.logger.info(f"Transcribing {len(audio_data) / sample_rate:.1f}s of audio")
+
+        # Silence gate: a toggle with no speech records pure ambience, and
+        # whisper-cli happily hallucinates on it ("C'mon, go ahead, go
+        # ahead..."). Skip the model entirely when the whole clip sits below
+        # the configured RMS floor. The per-clip RMS is always logged so the
+        # threshold can be tuned against the real noise floor of this mic.
+        min_dbfs = self.config.transcription.min_rms_dbfs
+        rms_dbfs = self._rms_dbfs(audio_data)
+        self.logger.info(f"Clip RMS: {rms_dbfs:.1f} dBFS (floor {min_dbfs:.1f})")
+        if rms_dbfs < min_dbfs:
+            self.logger.info(
+                f"Silent clip ({rms_dbfs:.1f} dBFS < {min_dbfs:.1f}); "
+                "skipping transcription"
+            )
+            self._notify("No speech detected", urgency="critical")
+            return
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             temp_file = tmp.name
@@ -1223,6 +1270,14 @@ class WhisperDaemon:
             # Clean artifacts (e.g., leading --)
             if text:
                 text = self.config.transcription.clean_text(text)
+
+            # Punctuation-only transcripts ("...", ".") are hallucinations on
+            # near-silent audio. The silence gate above catches most of them;
+            # this catches the rest, e.g. a keyboard click that lifted the
+            # clip's RMS above the floor. Never type them.
+            if text and not has_speech_content(text):
+                self.logger.info(f"Dropping punctuation-only transcript: {text!r}")
+                text = ""
 
             # Voice-command mode: treat the transcript as an instruction
             # applied to the selection captured at START time. Paste the
